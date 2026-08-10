@@ -54,11 +54,11 @@
           <div class="role-options">
             <label class="role-opt">
               <input type="radio" name="role" value="job">
-              <span>💼 I work</span>
+              <span><img src="/job.png" alt="" class="role-icon"> I work</span>
             </label>
             <label class="role-opt">
               <input type="radio" name="role" value="student">
-              <span>🎓 I study</span>
+              <span><img src="/student.png" alt="" class="role-icon"> I study</span>
             </label>
           </div>
         </fieldset>
@@ -160,7 +160,7 @@
         const meta = [
           c.age ? '&#127874; ' + escapeHtml(c.age) : '',
           c.country ? '&#128205; ' + escapeHtml(c.country) : '',
-          c.role === 'student' ? '&#127891; student' : '&#128188; job',
+          c.role === 'student' ? '<img src="/student.png" alt="" class="platform-icon"> student' : '<img src="/job.png" alt="" class="platform-icon"> job',
         ].filter(Boolean).join(' &middot; ');
         const socials = (Array.isArray(c.socials) ? c.socials : [])
           .map((s) => '<span class="mini-chip">' + escapeHtml(s.platform) + '</span>')

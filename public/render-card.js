@@ -38,7 +38,7 @@ function cardSection(label, inner) {
 
 function renderCardData(card, el) {
   const name = escapeHtml(card.name || 'Your name');
-  const emoji = card.role === 'student' ? '\u{1F393}' : '\u{1F4BC}';
+  const roleIcon = card.role === 'student' ? '/student.png' : '/job.png';
   const roleLine = escapeHtml(card.roleLabel || (card.role === 'student' ? 'Student' : 'Job'));
   const meta = [
     card.age ? '\u{1F382} ' + escapeHtml(card.age) : '',
@@ -52,7 +52,7 @@ function renderCardData(card, el) {
 
   let html =
     '<div class="card-name' + (card.owner ? ' owner-name' : '') + '">' + name + ownerBadge + '</div>' +
-    '<div class="card-role">' + emoji + ' ' + roleLine + '</div>' +
+    '<div class="card-role"><img src="' + roleIcon + '" alt="" class="role-icon"> ' + roleLine + '</div>' +
     (meta ? '<div class="card-meta">' + meta + '</div>' : '');
 
   if (card.aboutMe) {

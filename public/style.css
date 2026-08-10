@@ -206,6 +206,8 @@ input:focus, textarea:focus, select:focus {
 
 .role-opt:active span { transform: scale(0.98); }
 
+.role-icon { height: 18px; width: 18px; vertical-align: middle; border-radius: 3px; }
+
 textarea { resize: vertical; }
 
 button {
