@@ -1,0 +1,17 @@
+{
+  "name": "cardy",
+  "version": "1.0.0",
+  "description": "Cardy — create and share a tiny digital card about yourself.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.38.2",
+    "dotenv": "^17.4.2",
+    "express": "^4.21.2"
+  }
+}

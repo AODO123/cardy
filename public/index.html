@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cardy — create your digital card</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <span class="logo">cardy</span>
+    <span class="tagline">your tiny digital card</span>
+  </header>
+
+  <main class="wrap">
+    <section class="panel">
+      <h1>Create your card</h1>
+      <form id="card-form" autocomplete="off">
+        <label>
+          Name <em>*</em>
+          <input name="name" required placeholder="Ada Lovelace">
+        </label>
+
+        <div class="row">
+          <label>
+            Age
+            <input name="age" type="number" min="1" max="130" placeholder="36">
+          </label>
+          <label>
+            Country
+            <input name="country" placeholder="United Kingdom">
+          </label>
+        </div>
+
+        <fieldset class="role">
+          <legend>I am a&hellip;</legend>
+          <label class="radio"><input type="radio" name="role" value="job" checked> &#128188; Job</label>
+          <label class="radio"><input type="radio" name="role" value="student"> &#127891; Student</label>
+        </fieldset>
+
+        <label id="role-label-wrap">
+          Job title / field of study
+          <input name="roleLabel" placeholder="Software Engineer">
+        </label>
+
+        <label>
+          Notes
+          <textarea name="notes" rows="4" placeholder="Say something about yourself&hellip;"></textarea>
+        </label>
+
+        <button type="submit" class="primary">Create card</button>
+        <p id="form-error" class="error" hidden></p>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Preview</h2>
+      <div id="preview" class="digital-card"></div>
+
+      <div id="result" hidden>
+        <h2>Your card is live! &#127881;</h2>
+        <div class="link-row">
+          <a id="share-link" target="_blank" rel="noopener"></a>
+          <button type="button" data-copy="share-link">Copy</button>
+        </div>
+        <div class="link-row" id="bitly-row" hidden>
+          <a id="bitly-link" target="_blank" rel="noopener"></a>
+          <button type="button" data-copy="bitly-link">Copy</button>
+        </div>
+        <p class="hint" id="bitly-hint" hidden>
+          Tip: set <code>BITLY_ACCESS_TOKEN</code> in the server env to auto-generate a bit.ly link.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    Made with <span class="logo">cardy</span>
+  </footer>
+
+  <script>
+    const form = document.getElementById('card-form');
+    const preview = document.getElementById('preview');
+    const result = document.getElementById('result');
+    const formError = document.getElementById('form-error');
+    const shareLink = document.getElementById('share-link');
+    const bitlyRow = document.getElementById('bitly-row');
+    const bitlyLink = document.getElementById('bitly-link');
+    const bitlyHint = document.getElementById('bitly-hint');
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+
+    function currentData() {
+      const fd = new FormData(form);
+      return {
+        name: fd.get('name') || '',
+        age: fd.get('age') || '',
+        country: fd.get('country') || '',
+        role: fd.get('role') || 'job',
+        roleLabel: fd.get('roleLabel') || '',
+        notes: fd.get('notes') || '',
+      };
+    }
+
+    function renderCard(data, el) {
+      const emoji = data.role === 'student' ? '&#127891;' : '&#128188;';
+      const roleLine = data.roleLabel || (data.role === 'student' ? 'Student' : 'Job');
+      const meta = [
+        data.age ? '\u{1F382} ' + escapeHtml(data.age) : '',
+        data.country ? '\u{1F4CD} ' + escapeHtml(data.country) : '',
+      ].filter(Boolean).join(' &middot; ');
+
+      el.innerHTML =
+        '<div class="card-name">' + (escapeHtml(data.name) || 'Your name') + '</div>' +
+        '<div class="card-role">' + emoji + ' ' + escapeHtml(roleLine) + '</div>' +
+        (meta ? '<div class="card-meta">' + meta + '</div>' : '') +
+        (data.notes ? '<div class="card-notes">' + escapeHtml(data.notes) + '</div>' : '');
+    }
+
+    form.addEventListener('input', () => renderCard(currentData(), preview));
+    renderCard(currentData(), preview);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      formError.hidden = true;
+      const res = await fetch('/api/cards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(currentData()),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        formError.textContent = data.error || 'Something went wrong. Try again.';
+        formError.hidden = false;
+        return;
+      }
+
+      const card = await res.json();
+      renderCard(card, preview);
+
+      shareLink.href = card.shareUrl;
+      shareLink.textContent = card.shareUrl;
+
+      if (card.bitlyUrl) {
+        bitlyLink.href = card.bitlyUrl;
+        bitlyLink.textContent = card.bitlyUrl;
+        bitlyRow.hidden = false;
+        bitlyHint.hidden = true;
+      } else {
+        bitlyRow.hidden = true;
+        bitlyHint.hidden = false;
+      }
+
+      result.hidden = false;
+      result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+
+    document.querySelectorAll('[data-copy]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const el = document.getElementById(btn.dataset.copy);
+        try {
+          await navigator.clipboard.writeText(el.href);
+          btn.textContent = 'Copied!';
+          setTimeout(() => (btn.textContent = 'Copy'), 1500);
+        } catch {
+          prompt('Copy this link:', el.href);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

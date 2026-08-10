@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cardy</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">cardy</a>
+    <span class="tagline">your tiny digital card</span>
+  </header>
+
+  <main class="wrap">
+    <section class="panel" style="grid-column: 1 / -1; max-width: 420px; justify-self: center;">
+      <div id="card" class="digital-card"></div>
+      <p id="message" class="hint" style="margin-top: 16px;"></p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    Made with <span class="logo">cardy</span>
+  </footer>
+
+  <script>
+    const id = location.pathname.split('/').filter(Boolean).pop();
+    const el = document.getElementById('card');
+    const msg = document.getElementById('message');
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+
+    fetch('/api/cards/' + encodeURIComponent(id))
+      .then(async (res) => {
+        if (!res.ok) throw new Error('not-found');
+        const card = await res.json();
+        document.title = card.name + ' — cardy';
+
+        const emoji = card.role === 'student' ? '&#127891;' : '&#128188;';
+        const roleLine = card.roleLabel || (card.role === 'student' ? 'Student' : 'Job');
+        const meta = [
+          card.age ? '\u{1F382} ' + escapeHtml(card.age) : '',
+          card.country ? '\u{1F4CD} ' + escapeHtml(card.country) : '',
+        ].filter(Boolean).join(' &middot; ');
+
+        el.innerHTML =
+          '<div class="card-name">' + escapeHtml(card.name) + '</div>' +
+          '<div class="card-role">' + emoji + ' ' + escapeHtml(roleLine) + '</div>' +
+          (meta ? '<div class="card-meta">' + meta + '</div>' : '') +
+          (card.notes ? '<div class="card-notes">' + escapeHtml(card.notes) + '</div>' : '');
+
+        msg.innerHTML = '&#128279; This card lives at <code>' + escapeHtml(location.href) + '</code>';
+      })
+      .catch(() => {
+        el.innerHTML = '<div class="card-name">Card not found</div>';
+        msg.textContent = 'Sorry, that card doesn’t exist.';
+      });
+  </script>
+</body>
+</html>
