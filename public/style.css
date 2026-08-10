@@ -213,8 +213,8 @@ input:focus, textarea:focus, select:focus {
 
 .photo-drop {
   position: relative;
-  width: 132px;
-  height: 132px;
+  width: 100%;
+  height: 110px;
   margin-top: 8px;
   border: 1.5px dashed var(--border);
   border-radius: 14px;

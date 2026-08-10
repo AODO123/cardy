@@ -35,15 +35,15 @@
         </label>
 
         <div class="field-group photo-field">
-          <label class="group-label">Photo <span class="optional">optional</span></label>
-          <div id="photo-drop" class="photo-drop" role="button" tabindex="0" aria-label="Add a photo">
+          <label class="group-label">Image <span class="optional">optional</span></label>
+          <div id="photo-drop" class="photo-drop" role="button" tabindex="0" aria-label="Upload an image">
             <input id="photo-input" type="file" accept="image/*" hidden>
             <img id="photo-preview" class="photo-preview" alt="" hidden>
             <div id="photo-placeholder" class="photo-placeholder">
               <span class="photo-plus">+</span>
-              <span>Photo</span>
+              <span>Upload your image</span>
             </div>
-            <button type="button" id="photo-remove" class="photo-remove" aria-label="Remove photo" title="Remove photo" hidden>&times;</button>
+            <button type="button" id="photo-remove" class="photo-remove" aria-label="Remove image" title="Remove image" hidden>&times;</button>
           </div>
         </div>
 
@@ -182,7 +182,7 @@
     const photoPreview = document.getElementById('photo-preview');
     const photoPlaceholder = document.getElementById('photo-placeholder');
     const photoRemove = document.getElementById('photo-remove');
-    let photoData = ''; // base64 data URI; '' means no photo
+    let photoData = ''; // base64 data URI; '' means no image
 
     // Daily-limit + edit state.
     const limitBanner = document.getElementById('limit-banner');
