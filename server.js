@@ -422,6 +422,12 @@ app.get('/card/:id', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'card.html'));
 });
 
+// Some browsers still poke at /favicon.ico by habit even though every page
+// declares /cardy.png as its icon. Answer with the real icon instead of a 404.
+app.get('/favicon.ico', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'cardy.png'));
+});
+
 // Unmatched routes return JSON 404 instead of Express's HTML page.
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found.' });
