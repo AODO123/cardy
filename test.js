@@ -10,12 +10,17 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const crypto = require('crypto');
+const http = require('http');
 
 require('dotenv').config({ quiet: true }); // load UPSTASH/REDIS env for the test process too
 
 const HOST = '127.0.0.1';
 const PORT = 4123;
 const BASE = `http://${HOST}:${PORT}`;
+// A second server with no PUBLIC_BASE_URL exercises the Host-header rejection
+// path (and an isolated OG rate-limit counter).
+const PORT2 = 4124;
+const BASE2 = `http://${HOST}:${PORT2}`;
 
 let passed = 0;
 let failed = 0;
@@ -34,8 +39,8 @@ function check(name, cond, extra) {
 // test junk behind.
 const createdCardIds = new Set();
 
-async function post(url, body) {
-  const res = await fetch(BASE + url, {
+async function postOn(base, url, body) {
+  const res = await fetch(base + url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: typeof body === 'string' ? body : JSON.stringify(body),
@@ -46,19 +51,21 @@ async function post(url, body) {
   if (json && json.id) createdCardIds.add(json.id);
   return { status: res.status, json, text };
 }
+const post = (url, body) => postOn(BASE, url, body);
 
-async function get(url, headers = {}) {
-  const res = await fetch(BASE + url, { headers });
+async function getOn(base, url, headers = {}) {
+  const res = await fetch(base + url, { headers });
   const buf = Buffer.from(await res.arrayBuffer());
   return { status: res.status, text: buf.toString('utf8'), headers: res.headers, buf };
 }
+const get = (url, headers = {}) => getOn(BASE, url, headers);
 
 // Like post(), but lets us replay the server-issued fingerprint cookie so a
 // series of requests behaves like one browser. Also returns the cookie value.
-async function postWithCookie(url, body, cookie) {
+async function postWithCookieOn(base, url, body, cookie) {
   const headers = { 'Content-Type': 'application/json' };
   if (cookie) headers.Cookie = cookie;
-  const res = await fetch(BASE + url, { method: 'POST', headers, body: JSON.stringify(body) });
+  const res = await fetch(base + url, { method: 'POST', headers, body: JSON.stringify(body) });
   const sc = res.headers.get('set-cookie') || '';
   const fp = (sc.match(/cardy_fp=([^;]+)/) || [])[1] || '';
   const text = await res.text();
@@ -66,6 +73,36 @@ async function postWithCookie(url, body, cookie) {
   try { json = JSON.parse(text); } catch { /* not JSON */ }
   if (json && json.id) createdCardIds.add(json.id);
   return { status: res.status, json, text, fp, cookie: sc };
+}
+const postWithCookie = (url, body, cookie) => postWithCookieOn(BASE, url, body, cookie);
+
+// A raw http.request that lets us send a custom Host header — undici's fetch
+// silently drops one, so this is the only way to poke at Host handling.
+function rawPost(port, urlPath, hostHeader, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path: urlPath,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data),
+        Host: hostHeader,
+      },
+    }, (res) => {
+      let text = '';
+      res.on('data', (d) => { text += d; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(text); } catch { /* not JSON */ }
+        resolve({ status: res.statusCode, json, text });
+      });
+    });
+    req.on('error', reject);
+    req.end(data);
+  });
 }
 
 // Load render-card.js in a bare vm context so we can test it headless.
@@ -83,39 +120,42 @@ function render(card) {
 
 const XSS = '<script>alert(1)</script>';
 
+// Spawn a server.js instance on a port and wait until it answers HTTP.
+function bootServer(port, extraEnv = {}) {
+  return new Promise((resolve, reject) => {
+    const server = spawn(process.execPath, ['server.js'], {
+      cwd: __dirname,
+      env: { ...process.env, PORT: String(port), ADMIN_PASSWORD: 'testpass-123', ...extraEnv },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    server.stderr.on('data', (d) => { stderr += d; });
+    const wait = async () => {
+      const start = Date.now();
+      while (Date.now() - start < 10000) {
+        try {
+          const res = await fetch(`http://${HOST}:${port}/`);
+          if (res.status === 200) return resolve(server);
+        } catch { /* not up yet */ }
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      reject(new Error(`Server on :${port} failed to start. stderr:\n${stderr}`));
+    };
+    wait();
+  });
+}
+
 async function main() {
   // Direct Redis access for cleanup + the daily-limit tests.
   const { Redis } = require('@upstash/redis');
   const adminRedis = Redis.fromEnv();
   const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 
-  // Boot the server.
-  const server = spawn(process.execPath, ['server.js'], {
-    cwd: __dirname,
-    env: { ...process.env, PORT: String(PORT), ADMIN_PASSWORD: 'testpass-123' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let stderr = '';
-  server.stderr.on('data', (d) => { stderr += d; });
-
-  const ready = await (async () => {
-    const start = Date.now();
-    while (Date.now() - start < 10000) {
-      try {
-        const res = await fetch(BASE + '/');
-        if (res.status === 200) return true;
-      } catch { /* not up yet */ }
-      await new Promise((r) => setTimeout(r, 120));
-    }
-    return false;
-  })();
-
-  if (!ready) {
-    console.error('Server failed to start. stderr:\n' + stderr);
-    server.kill('SIGTERM');
-    process.exit(1);
-  }
-  console.log('Server up. Running tests…\n');
+  // Boot the servers. server2 has no PUBLIC_BASE_URL so the Host-header
+  // rejection path and the OG rate limiter can be exercised against it.
+  const server = await bootServer(PORT);
+  const server2 = await bootServer(PORT2, { PUBLIC_BASE_URL: '' });
+  console.log('Servers up. Running tests…\n');
 
   // ---- POST /api/cards ----
   console.log('── POST /api/cards: validation');
@@ -181,6 +221,17 @@ async function main() {
   r = await post('/api/cards', { name: 'soc4', age: 20, socials: [{ platform: 'x', handle: longHandle }] });
   check('socials: handle sliced to 120', r.status === 201 && r.json.socials[0].handle.length === 120);
 
+  console.log('── POST /api/cards: length limits');
+
+  r = await post('/api/cards', { name: 'a'.repeat(200), age: 20 });
+  check('length: name truncated to 100', r.status === 201 && r.json.name.length === 100, `got ${r.status}`);
+
+  r = await post('/api/cards', { name: 'x', age: 20, aboutMe: 'b'.repeat(600) });
+  check('length: aboutMe truncated to 500', r.status === 201 && r.json.aboutMe.length === 500);
+
+  r = await post('/api/cards', { name: 'x', age: 20, mbti: 'INFJ'.repeat(4), website: 'https://' + 'c'.repeat(300) });
+  check('length: mbti → 10, website → 200', r.status === 201 && r.json.mbti.length === 10 && r.json.website.length === 200);
+
   console.log('── POST /api/cards: backward compatibility');
 
   r = await post('/api/cards', { name: 'bc1', age: 20, aboutMe: 'new', notes: 'old' });
@@ -243,6 +294,10 @@ async function main() {
     r = await get('/' + asset);
     check(`asset ${asset} → 200`, r.status === 200, `got ${r.status}`);
   }
+
+  r = await get('/');
+  check('security: CSP header present', (r.headers.get('content-security-policy') || '').includes("default-src 'self'"));
+  check('security: no X-Powered-By header', !r.headers.has('x-powered-by'));
 
   // ---- OG meta tags & image ----
   console.log('── OG meta tags & image');
@@ -382,6 +437,9 @@ async function main() {
 
   r = await postWithCookie('/api/cards', { name: 'x', age: 10, _editId: '000000' }, 'cardy_fp=' + fp);
   check('edit: unknown id → 404', r.status === 404);
+
+  r = await post('/api/cards', { name: 'x', age: 20, _editId: 'nothex!' });
+  check('edit: malformed _editId → 400', r.status === 400 && r.json.error === 'Invalid card id.', `got ${r.status} ${JSON.stringify(r.json)}`);
 
   // Simulate the next day by clearing today's limit key, then create a second
   // card in the same browser and confirm the banner can list both cards.
@@ -562,6 +620,11 @@ async function main() {
     const adminCardId = r.json && r.json.id;
 
     r = await adminReq(login.token, 'GET', '/admin/api/cards');
+    check('admin: list strips fingerprint', !r.text.includes('fingerprint'));
+    r = await adminReq(login.token, 'GET', '/admin/api/cards/' + adminCardId);
+    check('admin: detail strips fingerprint', !r.text.includes('fingerprint'));
+
+    r = await adminReq(login.token, 'GET', '/admin/api/cards');
     check('admin: created card appears in list', r.status === 200 && Array.isArray(r.json) &&
       r.json.some((c) => c.id === adminCardId && c.name === 'admin test'));
 
@@ -575,6 +638,7 @@ async function main() {
     r = await adminReq(login.token, 'PATCH', '/admin/api/cards/' + adminCardId,
       { name: 'admin test', age: 34, country: 'Egypt', owner: true, socials: [{ platform: 'x', handle: '@admin' }] }, csrf);
     check('admin: owner back on', r.status === 200 && r.json.owner === true);
+    check('admin: PATCH response strips fingerprint', !r.text.includes('fingerprint'));
 
     r = await get('/api/cards/' + adminCardId);
     check('admin: edited card visible publicly with owner', r.status === 200 && r.text.includes('"owner":true'));
@@ -659,6 +723,29 @@ async function main() {
     const me2 = await adminReq(login.token, 'GET', '/admin/api/me'); // new session → new CSRF
     csrf = me2.json.csrf;
 
+    // Admins bypass the one-per-day limit on the public form (session cookie).
+    let ac = await postWithCookie('/api/cards', { name: 'admin public1', age: 20 }, 'cardy_admin=' + login.token);
+    check('admin bypass: first public card → 201', ac.status === 201, `got ${ac.status}`);
+    const adminFp = ac.fp;
+    const adminPublic1 = ac.json && ac.json.id;
+    ac = await postWithCookie('/api/cards', { name: 'admin public2', age: 21 }, 'cardy_admin=' + login.token + '; cardy_fp=' + adminFp);
+    check('admin bypass: second card same day → 201', ac.status === 201, `got ${ac.status}`);
+    check('admin bypass: distinct ids', ac.json && ac.json.id !== adminPublic1, `${adminPublic1} vs ${ac.json && ac.json.id}`);
+    let dlAdmin = JSON.parse((await get('/api/daily-limit', { Cookie: 'cardy_admin=' + login.token + '; cardy_fp=' + adminFp })).text);
+    check('admin bypass: daily-limit reports limited:false', dlAdmin.limited === false, JSON.stringify(dlAdmin));
+    await adminRedis.del('cardy:fp:' + adminFp);
+
+    // A legacy sha-256 hash still verifies, and upgrades to scrypt in place.
+    await adminRedis.set('cardy:admin:passhash', sha256('migrate-pass'));
+    let mlogin = await adminLogin('migrate-pass');
+    check('migration: legacy sha256 login succeeds', mlogin.status === 200 && !!mlogin.token, `got ${mlogin.status}`);
+    const migrated = await adminRedis.get('cardy:admin:passhash');
+    check('migration: hash upgraded to scrypt (salt:hash)', typeof migrated === 'string' && migrated.includes(':'), JSON.stringify(migrated));
+    mlogin = await adminLogin('migrate-pass');
+    check('migration: scrypt hash still verifies', mlogin.status === 200, `got ${mlogin.status}`);
+    mlogin = await adminLogin('migrate-pass-wrong');
+    check('migration: wrong password rejected after upgrade', mlogin.status === 401, `got ${mlogin.status}`);
+
     // logout invalidates the session
     r = await adminReq(login.token, 'POST', '/admin/logout', undefined, csrf);
     check('admin: logout → 200', r.status === 200);
@@ -669,6 +756,31 @@ async function main() {
     if (prevPassHash) await adminRedis.set('cardy:admin:passhash', prevPassHash);
     else await adminRedis.del('cardy:admin:passhash');
   }
+
+  // ---- Host header hardening + OG rate limiting (server2, no PUBLIC_BASE_URL) ----
+  console.log('── Host header + OG rate limit');
+
+  // A malicious Host header must never poison a share URL.
+  let hr = await rawPost(PORT2, '/api/cards', 'evil.example', { name: 'host evil', age: 20 });
+  check('host: malicious Host rejected → 500 + clear error',
+    hr.status === 500 && /PUBLIC_BASE_URL/.test(hr.json.error || ''), `got ${hr.status} ${hr.text}`);
+
+  // A loopback Host builds the share URL from the actual host.
+  let r2 = await postWithCookieOn(BASE2, '/api/cards', { name: 'host ok', age: 20 });
+  check('host: localhost Host builds shareUrl from host',
+    r2.status === 201 && /^http:\/\/127\.0\.0\.1:4124\/card\/[0-9a-f]{6}$/.test(r2.json.shareUrl), JSON.stringify(r2.json));
+  if (r2.fp) {
+    await adminRedis.del('cardy:fp:' + r2.fp);
+    await adminRedis.del('cardy:daily:' + r2.fp + ':' + new Date().toISOString().slice(0, 10));
+  }
+
+  // The OG renderer is capped per IP; the 31st request in a minute is refused.
+  for (let i = 0; i < 30; i++) {
+    const og = await getOn(BASE2, '/og/000000.png');
+    if (i === 29) check('og: 30th request within a minute → 200 PNG', og.status === 200, `got ${og.status}`);
+  }
+  const og31 = await getOn(BASE2, '/og/000000.png');
+  check('og: 31st request within a minute → 429', og31.status === 429, `got ${og31.status}`);
 
   // Cleanup: delete every card this run created (never touch the owner).
   const ids = [...createdCardIds];
@@ -691,6 +803,7 @@ async function main() {
     !!ownerCard && ownerCard.name === 'Costa' && ownerCard.owner === true && noTestLeftovers,
     'cards: ' + JSON.stringify(leftCards.map((c) => ({ id: c.key.slice(13), name: c.name, owner: c.owner }))));
 
+  server2.kill('SIGTERM');
   server.kill('SIGTERM');
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) {

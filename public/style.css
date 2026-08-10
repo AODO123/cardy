@@ -132,7 +132,11 @@ input, textarea, select {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-input[hidden], img[hidden] { display: none; }
+/* The hidden attribute is used all over for toggling (photo preview vs
+   placeholder, the limit banner, form errors...). A global reset with
+   !important beats any display rule on the same element — without it, the
+   photo placeholder's `display: flex` would override the attribute. */
+[hidden] { display: none !important; }
 
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: 0.75; }
 

@@ -12,7 +12,7 @@ Live at **[cardy-ten.vercel.app](https://cardy-ten.vercel.app)**.
 - **Job or student**, with a title or field of study
 - **About me**, website, MBTI, interests, favorite song, favorite movie
 - **Socials as plain usernames** — Discord, X, Instagram, TikTok. No OAuth dance, no verification; you just type your handle
-- A shareable link to the page, and a bit.ly short link when Bitly is configured
+- A shareable link to the page
 
 One card can be flagged as the **owner** card from the admin dashboard — it gets a gold name and a small badge. That's it, kept deliberately simple.
 
@@ -28,7 +28,7 @@ npm start
 
 Open http://localhost:3000, submit the form, and you get the card's URL back.
 
-A note on bit.ly: it only shortens URLs it can actually reach. For local testing, run a tunnel (`ngrok http 3000`) and set `PUBLIC_BASE_URL` to the tunnel's address.
+Local card links are built from the request's Host header, which only accepts loopback hosts. If you want to test on a phone or through a tunnel (`ngrok http 3000`), set `PUBLIC_BASE_URL` to the tunnel's address so links point somewhere real.
 
 ## How it works
 
@@ -36,13 +36,12 @@ Cards are stored in Upstash Redis as `cardy:card:<id>` JSON blobs. The server ke
 
 - `POST /api/cards` validates and saves a card, then returns its `shareUrl`
 - `GET /card/:id` serves the card page, which loads its data from `GET /api/cards/:id`
-- Bitly shortening happens server-side, so your token never reaches the browser. If it fails — quota's the usual culprit — the card still works, you just get the full link
 
 Cards are rendered by escaping everything user-supplied and only ever linking http/https URLs, so a card can't smuggle in scripts or `javascript:` links.
 
 ## Admin dashboard
 
-`/admin` is a password-protected panel where the site owner can list, search, create, edit, and delete every card, and mark one as the owner. The password comes from `ADMIN_PASSWORD`, and it can be changed later from the dashboard itself (the new hash is stored in Redis and takes over from the env var).
+`/admin` is a password-protected panel where the site owner can list, search, create, edit, and delete every card, and mark one as the owner. The password comes from `ADMIN_PASSWORD`, and it can be changed later from the dashboard itself (the new scrypt hash is stored in Redis and takes over from the env var).
 
 On top of the password:
 
@@ -75,8 +74,7 @@ Every route needs the admin session cookie, and every mutation also needs an `X-
 | `UPSTASH_REDIS_REST_URL` | Required. Upstash Redis REST URL. |
 | `UPSTASH_REDIS_REST_TOKEN` | Required. Upstash Redis REST token. |
 | `ADMIN_PASSWORD` | Required for the dashboard. Password for `/admin`. |
-| `BITLY_ACCESS_TOKEN` | Optional. Enables bit.ly short links. |
-| `PUBLIC_BASE_URL` | Optional. Public base URL used to build card links. Unset → links are built from the incoming request. |
+| `PUBLIC_BASE_URL` | Optional but recommended. Public base URL used to build card links. Unset → links are built from the request's Host header, but only loopback hosts are accepted. |
 | `PORT` | Local dev port (default 3000). Ignored on Vercel. |
 
 ## Deploy to Vercel
@@ -88,7 +86,6 @@ vercel login
 vercel env add UPSTASH_REDIS_REST_URL
 vercel env add UPSTASH_REDIS_REST_TOKEN
 vercel env add ADMIN_PASSWORD
-vercel env add BITLY_ACCESS_TOKEN     # optional
 vercel env add PUBLIC_BASE_URL        # your https://<project>.vercel.app URL
 vercel --prod
 ```
@@ -121,7 +118,7 @@ JSON body:
 }
 ```
 
-`name` and `age` (a whole number, 1–130) are required; everything else is optional. Known platforms are deduped, handles are trimmed to 120 characters, and unknown ones are dropped. Returns `201` with the stored card, including `shareUrl` and — when Bitly is configured and has quota — `bitlyUrl`.
+`name` and `age` (a whole number, 1–130) are required; everything else is optional. Known platforms are deduped, handles are trimmed to 120 characters, and unknown ones are dropped. Text fields are truncated to sane lengths server-side. Returns `201` with the stored card, including `shareUrl`.
 
 ### `GET /api/cards/:id`
 
@@ -133,12 +130,12 @@ Returns the card, or `404 { "error": "Card not found." }`.
 npm test
 ```
 
-The suite boots a real server against your Redis and runs a bit over a hundred checks: API validation, backward compatibility (old cards used `notes` and `favoriteMusic` — both still read), the renderer including XSS escaping, every page and asset, and the whole admin flow (auth, CSRF, rate limiting, owner flag). It creates its own cards and deletes them at the end, so it won't leave junk in your database.
+The suite boots a real server against your Redis and runs close to two hundred checks: API validation, backward compatibility (old cards used `notes` and `favoriteMusic` — both still read), the renderer including XSS escaping, every page and asset, and the whole admin flow (auth, CSRF, rate limiting, owner flag, password migration), plus the security hardening (CSP headers, Host-header rejection, OG rate limiting). It creates its own cards and deletes them at the end, so it won't leave junk in your database.
 
 ## Project layout
 
 ```
-server.js          Express app — Redis, Bitly, API, admin auth
+server.js          Express app — Redis, API, admin auth
 api/index.js       Vercel serverless entry point
 views/             Session-gated pages: admin dashboard + login
 public/            Static site: form, card view, styles, icons

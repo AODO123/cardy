@@ -9,6 +9,7 @@ const { Resvg } = require('@resvg/resvg-js');
 const { cardSvg } = require('./og-image');
 
 const app = express();
+app.disable('x-powered-by'); // don't advertise Express in every response
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
@@ -19,7 +20,7 @@ const redis = Redis.fromEnv();
 const cardKey = (id) => `cardy:card:${id}`;
 
 // Admin auth. The password is ADMIN_PASSWORD, unless it was changed from the
-// dashboard — that stores a sha-256 hash in Redis, which wins. Sessions live
+// dashboard — that stores a scrypt hash in Redis, which wins. Sessions live
 // in Redis (so they survive serverless restarts), cookies are httpOnly +
 // sameSite=strict, login is rate-limited per IP, and every state-changing
 // request must echo a per-session CSRF token.
@@ -42,12 +43,52 @@ function safeEqual(a, b) {
   return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
 }
 
+// Password hashing uses scrypt with a random per-password salt, stored as
+// "<salt_hex>:<derived_hex>". sha256 is kept around only to verify hashes
+// written before this upgrade, and those get re-hashed on first success.
+const SCRYPT_KEYLEN = 64;
+
+function hashPassword(password) {
+  return new Promise((resolve, reject) => {
+    const salt = crypto.randomBytes(16);
+    crypto.scrypt(String(password), salt, SCRYPT_KEYLEN, (err, key) => {
+      if (err) return reject(err);
+      resolve(salt.toString('hex') + ':' + key.toString('hex'));
+    });
+  });
+}
+
+// Verify a password against a stored hash. legacy=true means the stored value
+// is a bare sha-256 hex from before scrypt — the caller re-hashes on success.
+async function verifyPassword(password, stored) {
+  if (typeof stored !== 'string' || !stored) return { ok: false, legacy: false };
+  const sep = stored.indexOf(':');
+  if (sep === -1) {
+    return { ok: safeEqual(sha256(String(password)), stored), legacy: true };
+  }
+  const saltHex = stored.slice(0, sep);
+  const hashHex = stored.slice(sep + 1);
+  if (!/^[0-9a-f]+$/i.test(saltHex) || !/^[0-9a-f]+$/i.test(hashHex)) {
+    return { ok: false, legacy: false };
+  }
+  const salt = Buffer.from(saltHex, 'hex');
+  const expected = Buffer.from(hashHex, 'hex');
+  const derived = await new Promise((resolve, reject) => {
+    crypto.scrypt(String(password), salt, expected.length, (err, key) => (err ? reject(err) : resolve(key)));
+  });
+  return { ok: derived.length === expected.length && crypto.timingSafeEqual(derived, expected), legacy: false };
+}
+
 // The active admin password hash: a runtime-changed hash in Redis wins,
-// otherwise fall back to the ADMIN_PASSWORD env var.
+// otherwise fall back to the ADMIN_PASSWORD env var (hashed once and cached —
+// scrypt is deliberately slow, so re-deriving it on every login would hurt).
+let envPasswordHash = null;
 async function adminPasswordHash() {
   const stored = await redis.get(passwordKey);
   if (stored) return stored;
-  return process.env.ADMIN_PASSWORD ? sha256(process.env.ADMIN_PASSWORD) : null;
+  if (!process.env.ADMIN_PASSWORD) return null;
+  if (!envPasswordHash) envPasswordHash = await hashPassword(process.env.ADMIN_PASSWORD);
+  return envPasswordHash;
 }
 
 function getCookie(req, name) {
@@ -86,23 +127,27 @@ const requireAuth = (api = true) => async (req, res, next) => {
 };
 
 // CSRF: state-changing admin requests must echo the session's CSRF token.
+// Compared via safeEqual so a wrong token doesn't leak timing information.
 const requireCsrf = (req, res, next) => {
   const provided = req.headers['x-csrf-token'];
-  if (!req.admin || !provided || provided !== req.admin.csrf) {
+  if (!req.admin || typeof provided !== 'string' || !safeEqual(provided, req.admin.csrf)) {
     return res.status(403).json({ error: 'Invalid or missing CSRF token.' });
   }
   next();
 };
 
 // A couple of headers on everything: don't sniff content types, don't leak the
-// referrer. The admin pages additionally refuse to be framed (a clickjacked
-// login form could trick the admin into typing their password over a fake
-// overlay) and are never cached.
+// referrer, and a content-security-policy that only allows our own origin.
+// The admin pages additionally refuse to be framed (a clickjacked login form
+// could trick the admin into typing their password over a fake overlay) and
+// are never cached.
 app.use((req, res, next) => {
   if (req.path.startsWith('/admin')) {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Cache-Control', 'no-store');
   }
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'");
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
   next();
@@ -118,12 +163,22 @@ app.use(express.json({ limit: '1mb' })); // 1MB limit for photo uploads
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Express 4 swallows errors thrown in async handlers; this wrapper surfaces
-// them as a 500 instead of letting the process crash.
+// them as a 500 instead of letting the process crash. Errors we throw on
+// purpose carry a numeric status and a message worth showing the client.
 const asyncHandler = (fn) => (req, res) =>
   fn(req, res).catch((err) => {
+    if (err && typeof err.status === 'number') {
+      return res.status(err.status).json({ error: err.message });
+    }
     console.error('cardy error:', err);
     res.status(500).json({ error: 'Something went wrong.' });
   });
+
+function httpError(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
 
 function makeId() {
   return crypto.randomBytes(3).toString('hex'); // 6 hex chars
@@ -169,10 +224,20 @@ async function getAllCardKeys() {
   return keys;
 }
 
+// The base URL used for share links. In production PUBLIC_BASE_URL is set, so
+// a malicious Host header can never poison a share link. When it's unset (a
+// fresh local clone) only loopback hosts are accepted — anything else fails
+// loudly instead of silently building links that point at the attacker.
+const ALLOWED_DEV_HOST_RE = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
 function baseUrl(req) {
   if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL.replace(/\/+$/, '');
+  const host = req.get('host');
+  if (!host || !ALLOWED_DEV_HOST_RE.test(host)) {
+    throw httpError(500, 'Server cannot build share links: set PUBLIC_BASE_URL.');
+  }
   const proto = req.headers['x-forwarded-proto'] || req.protocol;
-  return `${proto}://${req.get('host')}`;
+  return `${proto}://${host}`;
 }
 
 function buildCardUrl(req, id) {
@@ -241,21 +306,27 @@ function normalizeCard(body, opts = {}) {
     return { error: 'Age must be a whole number between 1 and 130.' };
   }
 
-  const str = (v) => (v == null ? null : String(v).trim()) || null;
+  // Trimmed string, truncated to max chars so one abusive request can't blow
+  // up the stored card (and the DOM that renders it).
+  const str = (v, max) => {
+    const s = v == null ? null : String(v).trim();
+    if (!s) return null;
+    return max && s.length > max ? s.slice(0, max) : s;
+  };
 
   const value = {
-    name: String(name).trim(),
+    name: str(name, 100),
     age: ageNum,
-    country: str(country),
+    country: str(country, 100),
     role: role === 'student' ? 'student' : 'job',
-    roleLabel: str(roleLabel),
-    aboutMe: str(aboutMe) || str(notes),
+    roleLabel: str(roleLabel, 100),
+    aboutMe: str(aboutMe, 500) || str(notes, 500),
     socials: sanitizeSocials(socials),
-    website: str(website),
-    mbti: str(mbti),
-    interests: str(interests),
-    favoriteSong: str(favoriteSong) || str(favoriteMusic),
-    favoriteMovie: str(favoriteMovie),
+    website: str(website, 200),
+    mbti: str(mbti, 10),
+    interests: str(interests, 200),
+    favoriteSong: str(favoriteSong, 200) || str(favoriteMusic, 200),
+    favoriteMovie: str(favoriteMovie, 200),
   };
 
   const cleanPhoto = sanitizePhoto(photo);
@@ -303,8 +374,18 @@ app.post('/api/cards', asyncHandler(async (req, res) => {
 
   const fp = ensureFingerprint(req, res);
 
+  // Admin sessions (valid cardy_admin cookie) may create unlimited cards.
+  const adminSession = getCookie(req, COOKIE_NAME) ? await sessionFor(req) : null;
+
   // Editing an existing card — bypass the daily limit since the user owns it.
-  const editingId = req.body._editId;
+  const rawEditId = req.body._editId;
+  let editingId = null;
+  if (rawEditId != null && rawEditId !== '') {
+    if (typeof rawEditId !== 'string' || !/^[0-9a-f]{6}$/.test(rawEditId)) {
+      return res.status(400).json({ error: 'Invalid card id.' });
+    }
+    editingId = rawEditId;
+  }
   if (editingId) {
     const existing = await getCard(editingId);
     if (!existing) {
@@ -318,16 +399,20 @@ app.post('/api/cards', asyncHandler(async (req, res) => {
     return res.json(toPublicCard(card));
   }
 
-  // New card — enforce one per day per browser.
-  const existingCardId = await redis.get(dailyLimitKey(fp));
-  if (existingCardId) {
-    const existing = await getCard(existingCardId);
-    if (existing) {
-      return res.status(429).json({
-        error: 'limit',
-        message: 'You can create one card per day. Come back tomorrow!',
-        card: toPublicCard(existing),
-      });
+  // New card — enforce one per day per browser, unless an admin session is
+  // present. Admins still get their cards tracked per-browser below so they
+  // can edit them from the banner, but no daily key is written.
+  if (!adminSession) {
+    const existingCardId = await redis.get(dailyLimitKey(fp));
+    if (existingCardId) {
+      const existing = await getCard(existingCardId);
+      if (existing) {
+        return res.status(429).json({
+          error: 'limit',
+          message: 'You can create one card per day. Come back tomorrow!',
+          card: toPublicCard(existing),
+        });
+      }
     }
   }
 
@@ -345,7 +430,9 @@ app.post('/api/cards', asyncHandler(async (req, res) => {
   // card they've made, not just today's.
   await redis.lpush('cardy:fp:' + fp, id);
   await redis.ltrim('cardy:fp:' + fp, 0, 49);
-  await redis.set(dailyLimitKey(fp), id, { ex: 172800 }); // 48h TTL
+  if (!adminSession) {
+    await redis.set(dailyLimitKey(fp), id, { ex: 172800 }); // 48h TTL
+  }
   res.status(201).json(toPublicCard(card));
 }));
 
@@ -362,10 +449,13 @@ app.get('/api/cards/:id', asyncHandler(async (req, res) => {
 // Also lists every card this browser ever made, so the limit banner can link
 // to each one (newest card last).
 app.get('/api/daily-limit', async (req, res) => {
+  const admin = getCookie(req, COOKIE_NAME) ? await sessionFor(req) : null;
   const fp = getFingerprint(req);
   if (!fp) return res.json({ limited: false, cards: [] });
   try {
-    const todayId = await redis.get(dailyLimitKey(fp));
+    // Admins bypass the limit (unlimited creation), but the card list is
+    // still returned so the banner can offer edit links to their cards.
+    const todayId = admin ? null : await redis.get(dailyLimitKey(fp));
     const today = todayId ? await getCard(todayId) : null;
 
     const ids = await redis.lrange('cardy:fp:' + fp, 0, -1);
@@ -378,7 +468,7 @@ app.get('/api/daily-limit', async (req, res) => {
       cards.unshift(toPublicCard(today));
     }
 
-    res.json({ limited: !!todayId, today: today ? toPublicCard(today) : null, cards });
+    res.json({ limited: admin ? false : !!todayId, today: today ? toPublicCard(today) : null, cards });
   } catch (err) {
     console.error('cardy error:', err);
     res.json({ limited: false, cards: [] });
@@ -399,12 +489,22 @@ app.post('/admin/login', asyncHandler(async (req, res) => {
   }
 
   const { password } = req.body || {};
-  if (typeof password !== 'string' || !safeEqual(sha256(password), hash)) {
+  if (typeof password !== 'string') {
+    await redis.set(lock, attempts + 1, { ex: LOGIN_LOCK_SECONDS });
+    return res.status(401).json({ error: 'Incorrect password.' });
+  }
+  const verify = await verifyPassword(password, hash);
+  if (!verify.ok) {
     await redis.set(lock, attempts + 1, { ex: LOGIN_LOCK_SECONDS });
     return res.status(401).json({ error: 'Incorrect password.' });
   }
 
   await redis.del(lock); // a success resets the lockout counter
+
+  if (verify.legacy) {
+    // First successful login with a pre-scrypt hash: upgrade it in place.
+    await redis.set(passwordKey, await hashPassword(password));
+  }
 
   const token = crypto.randomBytes(32).toString('hex');
   await redis.set(
@@ -447,7 +547,8 @@ app.get('/admin/api/cards', requireAuth(), asyncHandler(async (req, res) => {
   const values = await redis.mget(...keys);
   const cards = keys
     .map((key, i) => (values[i] ? { id: key.slice('cardy:card:'.length), ...values[i] } : null))
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(toPublicCard);
   cards.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   res.json(cards);
 }));
@@ -457,7 +558,7 @@ app.get('/admin/api/cards/:id', requireAuth(), asyncHandler(async (req, res) => 
   if (!card) {
     return res.status(404).json({ error: 'Card not found.' });
   }
-  res.json({ id: req.params.id, ...card });
+  res.json(toPublicCard({ id: req.params.id, ...card }));
 }));
 
 app.post('/admin/api/cards', requireAuth(), requireCsrf, asyncHandler(async (req, res) => {
@@ -474,7 +575,7 @@ app.post('/admin/api/cards', requireAuth(), requireCsrf, asyncHandler(async (req
     shareUrl: buildCardUrl(req, id),
   };
   await saveCard(card);
-  res.status(201).json(card);
+  res.status(201).json(toPublicCard(card));
 }));
 
 app.patch('/admin/api/cards/:id', requireAuth(), requireCsrf, asyncHandler(async (req, res) => {
@@ -488,7 +589,7 @@ app.patch('/admin/api/cards/:id', requireAuth(), requireCsrf, asyncHandler(async
   }
   const card = { ...existing, ...result.value };
   await saveCard(card);
-  res.json(card);
+  res.json(toPublicCard(card));
 }));
 
 app.delete('/admin/api/cards/:id', requireAuth(), requireCsrf, asyncHandler(async (req, res) => {
@@ -519,13 +620,14 @@ app.post('/admin/api/cards/bulk-delete', requireAuth(), requireCsrf, asyncHandle
 app.post('/admin/api/password', requireAuth(), requireCsrf, asyncHandler(async (req, res) => {
   const { currentPassword, password } = req.body || {};
   const current = await adminPasswordHash();
-  if (!current || !safeEqual(sha256(currentPassword || ''), current)) {
+  const verify = await verifyPassword(currentPassword || '', current);
+  if (!verify.ok) {
     return res.status(401).json({ error: 'Current password is incorrect.' });
   }
   if (typeof password !== 'string' || password.length < 8) {
     return res.status(400).json({ error: 'New password must be at least 8 characters.' });
   }
-  await redis.set(passwordKey, sha256(password));
+  await redis.set(passwordKey, await hashPassword(password));
   res.json({ ok: true });
 }));
 
@@ -593,7 +695,33 @@ app.get('/card/:id', asyncHandler(async (req, res) => {
 
 // The OG card image: a flat PNG of the card, generated fresh per card. The
 // image is deterministic per card id, so the CDN can cache it indefinitely.
+// Rendering is CPU-heavy, so cap it per IP. The limiter lives in memory —
+// per serverless instance — which raises the cost of hammering it without
+// being a hard global cap (fine for this threat model).
+const OG_LIMIT = 30; // requests per IP per minute
+const OG_WINDOW_MS = 60 * 1000;
+const ogHits = new Map(); // ip → { count, resetAt }
+
+function ogLimited(req) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const hit = ogHits.get(ip);
+  if (!hit || now > hit.resetAt) {
+    ogHits.set(ip, { count: 1, resetAt: now + OG_WINDOW_MS });
+    if (ogHits.size > 5000) {
+      // Opportunistic sweep so the map can't grow forever.
+      for (const [k, v] of ogHits) if (now > v.resetAt) ogHits.delete(k);
+    }
+    return false;
+  }
+  hit.count++;
+  return hit.count > OG_LIMIT;
+}
+
 app.get('/og/:id.png', asyncHandler(async (req, res) => {
+  if (ogLimited(req)) {
+    return res.status(429).json({ error: 'Too many requests. Try again shortly.' });
+  }
   const card = await getCard(req.params.id);
   const png = renderCardPng(card); // cardSvg falls back to the brand card
   res.setHeader('Content-Type', 'image/png');

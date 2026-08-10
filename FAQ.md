@@ -11,7 +11,7 @@ A tiny digital card app. You fill out a short form (name, age, role, socials, et
 ```bash
 # from the cardy/ directory
 npm install
-cp .env.example .env     # fill in your Upstash + Bitly credentials
+cp .env.example .env     # fill in your Upstash credentials
 npm start                # starts at http://localhost:3000
 ```
 
@@ -19,7 +19,6 @@ Your `.env` needs:
 - `ADMIN_PASSWORD` — the admin dashboard password
 - `UPSTASH_REDIS_REST_URL` — from your Upstash console
 - `UPSTASH_REDIS_REST_TOKEN` — from your Upstash console
-- `BITLY_ACCESS_TOKEN` — optional, for shortlinks
 - `PUBLIC_BASE_URL` — optional, e.g. `https://cardy-ten.vercel.app`
 
 ---
@@ -30,7 +29,7 @@ Just push to `main`. The Vercel GitHub App auto-deploys on every push. No manual
 
 ```bash
 git add .
-git commit --author="AODO123 <71036089+AODO123@users.noreply.github.com>" -m "Your message"
+git commit --author="Costa <71036089+AODO123@users.noreply.github.com>" -m "Your message"
 git push origin main
 ```
 
@@ -145,14 +144,15 @@ Just cards. Each card is stored as `cardy:card:<id>` in Redis. The admin passwor
 
 ## Tests are failing. What do I do?
 
-Run `npm test` and read the output. The test suite has 105 assertions covering:
+Run `npm test` and read the output. The test suite runs close to two hundred checks covering:
 - Card creation and validation
 - Social platform filtering
 - Backward compatibility (old field names)
 - Card retrieval
 - Page and asset serving
 - render-card.js logic
-- Admin dashboard routes
+- Admin dashboard routes (auth, CSRF, rate limiting, password migration)
+- Security hardening (CSP headers, Host-header rejection, OG rate limiting)
 
 If you broke something, the test output tells you exactly which assertion failed.
 
@@ -192,7 +192,7 @@ cardy/
 ├── server.js              # Express app (all routes, auth, Redis)
 ├── api/index.js           # Vercel serverless entry
 ├── vercel.json            # Rewrites everything to /api/index
-├── test.js                # 105-test suite
+├── test.js                # ~183-check suite
 ├── .env.example           # Template for .env
 ├── .gitignore
 ├── FAQ.md                 # ← you are here
