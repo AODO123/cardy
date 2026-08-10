@@ -1,14 +1,16 @@
 require('dotenv').config({ quiet: true });
 
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { Redis } = require('@upstash/redis');
+const { Resvg } = require('@resvg/resvg-js');
+const { cardSvg } = require('./og-image');
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const BITLY_TOKEN = process.env.BITLY_ACCESS_TOKEN;
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
 
 // Upstash Redis. Reads UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN from
@@ -112,7 +114,7 @@ app.use((req, res, next) => {
 // through that same gate.
 app.get(['/admin.html', '/admin-login.html'], (_req, res) => res.redirect('/admin'));
 
-app.use(express.json());
+app.use(express.json({ limit: '1mb' })); // 1MB limit for photo uploads
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Express 4 swallows errors thrown in async handlers; this wrapper surfaces
@@ -144,6 +146,16 @@ async function saveCard(card) {
   await redis.set(cardKey(card.id), JSON.stringify(card));
 }
 
+// Internal fields must never leave the server. The visitor fingerprint is how
+// edit-ownership is decided — if a card response leaked it, anyone could read
+// a stranger's fingerprint and forge the cookie to take over their card.
+function toPublicCard(card) {
+  if (!card) return null;
+  const copy = { ...card };
+  delete copy.fingerprint;
+  return copy;
+}
+
 // SCAN every stored card key. Keep the full `cardy:card:<id>` form — mget()
 // needs the full keys, not the bare ids.
 async function getAllCardKeys() {
@@ -157,30 +169,14 @@ async function getAllCardKeys() {
   return keys;
 }
 
-// Shorten a share URL with Bitly if a token is configured. Failures are
-// caught by the caller, so a quota hiccup never breaks card creation.
-async function shortenWithBitly(longUrl) {
-  const res = await fetch('https://api-ssl.bitly.com/v4/shorten', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${BITLY_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ long_url: longUrl }),
-  });
-  if (!res.ok) {
-    throw new Error(`Bitly returned ${res.status}: ${await res.text()}`);
-  }
-  const data = await res.json();
-  return data.link;
+function baseUrl(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL.replace(/\/+$/, '');
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  return `${proto}://${req.get('host')}`;
 }
 
 function buildCardUrl(req, id) {
-  if (PUBLIC_BASE_URL) {
-    return `${PUBLIC_BASE_URL.replace(/\/+$/, '')}/card/${id}`;
-  }
-  const proto = req.headers['x-forwarded-proto'] || req.protocol;
-  return `${proto}://${req.get('host')}/card/${id}`;
+  return `${baseUrl(req)}/card/${id}`;
 }
 
 // Socials are plain usernames; anything outside this list is dropped.
@@ -204,6 +200,21 @@ function sanitizeSocials(list) {
   return out;
 }
 
+// Validate and sanitize a base64 photo data URI. Returns the cleaned string
+// or null if the input is invalid or absent.
+function sanitizePhoto(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  const m = s.match(/^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!m) return null;
+  try {
+    const buf = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
+    if (buf.length > 800000) return null; // ~800KB cap
+    return 'data:image/' + m[1].toLowerCase() + ';base64,' + buf.toString('base64');
+  } catch { return null; }
+}
+
 // One place that turns raw input into a card. Returns { value } on success or
 // { error } on failure. includeOwner is admin-only — the public form can
 // never mark a card as the owner.
@@ -212,7 +223,7 @@ function normalizeCard(body, opts = {}) {
     name, age, country, role, roleLabel,
     aboutMe, notes, socials, website, mbti, interests,
     favoriteSong, favoriteMusic, favoriteMovie,
-    owner,
+    owner, photo,
   } = body || {};
 
   if (!name || !String(name).trim()) {
@@ -238,18 +249,50 @@ function normalizeCard(body, opts = {}) {
     country: str(country),
     role: role === 'student' ? 'student' : 'job',
     roleLabel: str(roleLabel),
-    // Older cards sent `notes`, new forms send `aboutMe`.
     aboutMe: str(aboutMe) || str(notes),
     socials: sanitizeSocials(socials),
     website: str(website),
     mbti: str(mbti),
     interests: str(interests),
-    // Older cards used `favoriteMusic`, new forms use `favoriteSong`.
     favoriteSong: str(favoriteSong) || str(favoriteMusic),
     favoriteMovie: str(favoriteMovie),
   };
+
+  const cleanPhoto = sanitizePhoto(photo);
+  if (cleanPhoto) value.photo = cleanPhoto;
+
   if (opts.includeOwner) value.owner = owner === true;
   return { value };
+}
+
+// ── Visitor fingerprint (httpOnly cookie, 30 days) ─────────────────────
+const FP_COOKIE = 'cardy_fp';
+const FP_TTL = 30 * 24 * 60 * 60; // 30 days
+
+function getFingerprint(req) {
+  let fp = getCookie(req, FP_COOKIE);
+  if (fp && /^[0-9a-f]{16}$/.test(fp)) return fp;
+  return null;
+}
+
+function ensureFingerprint(req, res) {
+  let fp = getCookie(req, FP_COOKIE);
+  if (fp && /^[0-9a-f]{16}$/.test(fp)) return fp;
+  fp = crypto.randomBytes(8).toString('hex');
+  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  res.cookie(FP_COOKIE, fp, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure,
+    path: '/',
+    maxAge: FP_TTL * 1000,
+  });
+  return fp;
+}
+
+// ── Daily card limit ───────────────────────────────────────────────────
+function dailyLimitKey(fp) {
+  return `cardy:daily:${fp}:${new Date().toISOString().slice(0, 10)}`;
 }
 
 app.post('/api/cards', asyncHandler(async (req, res) => {
@@ -258,27 +301,52 @@ app.post('/api/cards', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: result.error });
   }
 
+  const fp = ensureFingerprint(req, res);
+
+  // Editing an existing card — bypass the daily limit since the user owns it.
+  const editingId = req.body._editId;
+  if (editingId) {
+    const existing = await getCard(editingId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Card not found.' });
+    }
+    if (existing.fingerprint !== fp) {
+      return res.status(403).json({ error: 'You can only edit your own card.' });
+    }
+    const card = { ...existing, ...result.value };
+    await saveCard(card);
+    return res.json(toPublicCard(card));
+  }
+
+  // New card — enforce one per day per browser.
+  const existingCardId = await redis.get(dailyLimitKey(fp));
+  if (existingCardId) {
+    const existing = await getCard(existingCardId);
+    if (existing) {
+      return res.status(429).json({
+        error: 'limit',
+        message: 'You can create one card per day. Come back tomorrow!',
+        card: toPublicCard(existing),
+      });
+    }
+  }
+
   const id = await nextId();
   const card = {
     id,
     ...result.value,
+    fingerprint: fp,
     createdAt: new Date().toISOString(),
     shareUrl: buildCardUrl(req, id),
-    bitlyUrl: null,
   };
 
   await saveCard(card);
-
-  if (BITLY_TOKEN) {
-    try {
-      card.bitlyUrl = await shortenWithBitly(card.shareUrl);
-      await saveCard(card); // persist the bit.ly link on the stored card too
-    } catch (err) {
-      console.error('Bitly shorten failed:', err.message);
-    }
-  }
-
-  res.status(201).json(card);
+  // Remember this browser's card so the limit banner can link back to every
+  // card they've made, not just today's.
+  await redis.lpush('cardy:fp:' + fp, id);
+  await redis.ltrim('cardy:fp:' + fp, 0, 49);
+  await redis.set(dailyLimitKey(fp), id, { ex: 172800 }); // 48h TTL
+  res.status(201).json(toPublicCard(card));
 }));
 
 app.get('/api/cards/:id', asyncHandler(async (req, res) => {
@@ -286,8 +354,36 @@ app.get('/api/cards/:id', asyncHandler(async (req, res) => {
   if (!card) {
     return res.status(404).json({ error: 'Card not found.' });
   }
-  res.json(card);
+  res.json(toPublicCard(card));
 }));
+
+// Check whether this browser has already created a card today, and return it
+// so the client can switch to edit mode instead of showing the create form.
+// Also lists every card this browser ever made, so the limit banner can link
+// to each one (newest card last).
+app.get('/api/daily-limit', async (req, res) => {
+  const fp = getFingerprint(req);
+  if (!fp) return res.json({ limited: false, cards: [] });
+  try {
+    const todayId = await redis.get(dailyLimitKey(fp));
+    const today = todayId ? await getCard(todayId) : null;
+
+    const ids = await redis.lrange('cardy:fp:' + fp, 0, -1);
+    const cards = [];
+    if (ids.length) {
+      const values = await redis.mget(...ids.reverse().map((id) => cardKey(id)));
+      for (const v of values) if (v) cards.push(toPublicCard(v));
+    }
+    if (today && !cards.some((c) => c.id === today.id)) {
+      cards.unshift(toPublicCard(today));
+    }
+
+    res.json({ limited: !!todayId, today: today ? toPublicCard(today) : null, cards });
+  } catch (err) {
+    console.error('cardy error:', err);
+    res.json({ limited: false, cards: [] });
+  }
+});
 
 app.post('/admin/login', asyncHandler(async (req, res) => {
   const ip = req.ip || 'unknown';
@@ -376,7 +472,6 @@ app.post('/admin/api/cards', requireAuth(), requireCsrf, asyncHandler(async (req
     ...result.value,
     createdAt: new Date().toISOString(),
     shareUrl: buildCardUrl(req, id),
-    bitlyUrl: null,
   };
   await saveCard(card);
   res.status(201).json(card);
@@ -404,6 +499,23 @@ app.delete('/admin/api/cards/:id', requireAuth(), requireCsrf, asyncHandler(asyn
   res.json({ ok: true });
 }));
 
+// Bulk delete from the dashboard: the front-end sends the checked ids, we drop
+// whatever exists and report how many went away. idempotent — ids that are
+// already gone are just ignored.
+app.post('/admin/api/cards/bulk-delete', requireAuth(), requireCsrf, asyncHandler(async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((id) => /^[0-9a-f]{6}$/.test(String(id))) : [];
+  if (!ids.length) {
+    return res.status(400).json({ error: 'No valid card ids provided.' });
+  }
+  const keys = ids.map((id) => cardKey(id));
+  const values = await redis.mget(...keys);
+  const existingKeys = keys.filter((key, i) => values[i]);
+  if (existingKeys.length) {
+    await redis.del(...existingKeys);
+  }
+  res.json({ ok: true, deleted: existingKeys.length });
+}));
+
 app.post('/admin/api/password', requireAuth(), requireCsrf, asyncHandler(async (req, res) => {
   const { currentPassword, password } = req.body || {};
   const current = await adminPasswordHash();
@@ -417,10 +529,77 @@ app.post('/admin/api/password', requireAuth(), requireCsrf, asyncHandler(async (
   res.json({ ok: true });
 }));
 
+// The extra <head> tags for a card page. Link-preview crawlers (Discord,
+// WhatsApp, Telegram) fetch the HTML without running JS, so the per-card
+// title and Open Graph tags have to be baked into the response itself.
+function cardHeadTags(card, shareUrl) {
+  const name = String(card.name || 'cardy');
+  const roleLine = card.roleLabel || (card.role === 'student' ? 'Student' : 'your tiny digital card');
+  const meta = [card.age, card.country].filter(Boolean).join(' · ');
+  const description = [
+    `${name} — ${roleLine}`,
+    meta ? `${meta}.` : '',
+    card.aboutMe ? card.aboutMe : '',
+  ].filter(Boolean).join(' ');
+const escapeAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  return (
+    `<title>${escapeAttr(name)} — cardy</title>\n` +
+    `    <meta name="description" content="${escapeAttr(description.slice(0, 160))}">\n` +
+    `    <meta property="og:type" content="profile">\n` +
+    `    <meta property="og:title" content="${escapeAttr(name + ' — cardy')}">\n` +
+    `    <meta property="og:description" content="${escapeAttr(description.slice(0, 200))}">\n` +
+    `    <meta property="og:url" content="${escapeAttr(shareUrl)}">\n` +
+    `    <meta property="og:image" content="${escapeAttr(shareUrl.replace('/card/', '/og/') + '.png')}">\n` +
+    `    <meta property="og:image:width" content="1200">\n` +
+    `    <meta property="og:image:height" content="630">\n` +
+    `    <meta name="twitter:card" content="summary_large_image">\n` +
+    `    <meta name="twitter:title" content="${escapeAttr(name + ' — cardy')}">\n` +
+    `    <meta name="twitter:description" content="${escapeAttr(description.slice(0, 200))}">\n` +
+    `    <meta name="twitter:image" content="${escapeAttr(shareUrl.replace('/card/', '/og/') + '.png')}">`
+  );
+}
+
+// Rasterize a card's SVG to PNG. resvg is a WASM build, so no native binaries
+// to fight with on Vercel's serverless instances.
+function renderCardPng(card) {
+  const svg = cardSvg(card);
+  const resvg = new Resvg(svg, { fitTo: { mode: 'original' } });
+  const png = resvg.render().asPng();
+  return Buffer.from(png);
+}
+
 // The shared card page — a static shell that fetches /api/cards/:id in JS.
-app.get('/card/:id', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'card.html'));
-});
+// The title and meta tags are injected server-side so shared links preview
+// with the person's actual name and card graphic.
+app.get('/card/:id', asyncHandler(async (req, res) => {
+  const template = fs.readFileSync(path.join(__dirname, 'public', 'card.html'), 'utf8');
+  let card = null;
+  try {
+    card = await getCard(req.params.id);
+  } catch (err) {
+    console.error('cardy og lookup failed:', err.message);
+  }
+  if (card) {
+    const shareUrl = buildCardUrl(req, req.params.id);
+    return res.send(template.replace(
+      '<title>cardy — your tiny digital card</title>',
+      cardHeadTags(card, shareUrl)
+    ));
+  }
+  // Unknown id or Redis hiccup — serve the plain shell rather than an error.
+  res.send(template);
+}));
+
+// The OG card image: a flat PNG of the card, generated fresh per card. The
+// image is deterministic per card id, so the CDN can cache it indefinitely.
+app.get('/og/:id.png', asyncHandler(async (req, res) => {
+  const card = await getCard(req.params.id);
+  const png = renderCardPng(card); // cardSvg falls back to the brand card
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.send(png);
+}));
 
 // Some browsers still poke at /favicon.ico by habit even though every page
 // declares /cardy.png as its icon. Answer with the real icon instead of a 404.
@@ -438,6 +617,9 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ error: 'Invalid JSON body.' });
+  }
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request too large.' });
   }
   console.error('cardy error:', err);
   res.status(500).json({ error: 'Something went wrong.' });

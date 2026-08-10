@@ -50,7 +50,14 @@ function renderCardData(card, el) {
     ? ' <span class="owner-badge">Owner</span>'
     : '';
 
+  // An uploaded photo sits above the name, cropped into a circle. The value
+  // is a data URI that was validated server-side, so it's safe to inline.
+  const photoHtml = card.photo
+    ? '<img class="card-photo" src="' + escapeHtml(card.photo) + '" alt="">'
+    : '';
+
   let html =
+    photoHtml +
     '<div class="card-name' + (card.owner ? ' owner-name' : '') + '">' + name + ownerBadge + '</div>' +
     '<div class="card-role"><img src="' + roleIcon + '" alt="" class="role-icon"> ' + roleLine + '</div>' +
     (meta ? '<div class="card-meta">' + meta + '</div>' : '');

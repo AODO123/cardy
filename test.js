@@ -47,9 +47,25 @@ async function post(url, body) {
   return { status: res.status, json, text };
 }
 
-async function get(url) {
-  const res = await fetch(BASE + url);
-  return { status: res.status, text: await res.text() };
+async function get(url, headers = {}) {
+  const res = await fetch(BASE + url, { headers });
+  const buf = Buffer.from(await res.arrayBuffer());
+  return { status: res.status, text: buf.toString('utf8'), headers: res.headers, buf };
+}
+
+// Like post(), but lets us replay the server-issued fingerprint cookie so a
+// series of requests behaves like one browser. Also returns the cookie value.
+async function postWithCookie(url, body, cookie) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (cookie) headers.Cookie = cookie;
+  const res = await fetch(BASE + url, { method: 'POST', headers, body: JSON.stringify(body) });
+  const sc = res.headers.get('set-cookie') || '';
+  const fp = (sc.match(/cardy_fp=([^;]+)/) || [])[1] || '';
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch { /* not JSON */ }
+  if (json && json.id) createdCardIds.add(json.id);
+  return { status: res.status, json, text, fp, cookie: sc };
 }
 
 // Load render-card.js in a bare vm context so we can test it headless.
@@ -68,6 +84,11 @@ function render(card) {
 const XSS = '<script>alert(1)</script>';
 
 async function main() {
+  // Direct Redis access for cleanup + the daily-limit tests.
+  const { Redis } = require('@upstash/redis');
+  const adminRedis = Redis.fromEnv();
+  const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+
   // Boot the server.
   const server = spawn(process.execPath, ['server.js'], {
     cwd: __dirname,
@@ -189,6 +210,7 @@ async function main() {
   if (okCardId) {
     r = await get(`/api/cards/${okCardId}`);
     check('existing card → 200 with data', r.status === 200 && r.text.includes('jane doe'));
+    check('existing card: no fingerprint leaked', !r.text.includes('fingerprint'));
   }
   r = await get('/api/cards/000000');
   check('missing card → 404 Card not found', r.status === 404 && r.text.includes('Card not found.'));
@@ -207,6 +229,10 @@ async function main() {
   check('home: favorite song', r.text.includes('Favorite song') && r.text.includes('name="favoriteSong"'));
   check('home: more-about-you tiles', r.text.includes('More about you') && (r.text.match(/class="tile">/g) || []).length === 4);
   check('home: all 4 social placeholders are "username"', (r.text.match(/placeholder="username"/g) || []).length === 4);
+  check('home: photo dropzone present', r.text.includes('id="photo-drop"') && r.text.includes('id="photo-input"'));
+  check('home: daily-limit banner present', r.text.includes('id="limit-banner"'));
+  check('home: no bitly anywhere', !r.text.toLowerCase().includes('bitly'));
+  check('home: photo field is after name', r.text.indexOf('photo-drop') > r.text.indexOf('name="name"'));
 
   r = await get('/card/000000');
   check('card page serves (even unknown id) → 200', r.status === 200);
@@ -217,6 +243,161 @@ async function main() {
     r = await get('/' + asset);
     check(`asset ${asset} → 200`, r.status === 200, `got ${r.status}`);
   }
+
+  // ---- OG meta tags & image ----
+  console.log('── OG meta tags & image');
+
+  // Create a test card to verify OG tags against
+  r = await post('/api/cards', {
+    name: 'OG Test',
+    age: 25,
+    country: 'Mars',
+    role: 'student',
+    roleLabel: 'Space cadet',
+    aboutMe: 'I <3 rockets & <script>alert(1)</script>',
+    socials: [{ platform: 'discord', handle: 'spaceman' }],
+    mbti: 'INTJ',
+    favoriteSong: 'Space Oddity',
+  });
+  const ogCardId = r.json.id;
+
+  r = await get(`/card/${ogCardId}`);
+  check('card page with valid card → 200', r.status === 200);
+  check('card page: has per-card title', r.text.includes('<title>OG Test — cardy</title>'));
+  check('card page: has og:title', r.text.includes('property="og:title"') && r.text.includes('OG Test — cardy'));
+  check('card page: has og:description', r.text.includes('property="og:description"'));
+  check('card page: has og:url', r.text.includes('property="og:url"') && r.text.includes('/card/' + ogCardId));
+  check('card page: has og:image → /og/:id.png', r.text.includes('property="og:image"') && r.text.includes('/og/' + ogCardId + '.png'));
+  check('card page: has og:image:width/height', r.text.includes('og:image:width') && r.text.includes('og:image:height'));
+  check('card page: has twitter:card', r.text.includes('name="twitter:card"') && r.text.includes('summary_large_image'));
+  // The page has its own legit <script> tags, so check the payload is escaped,
+  // not that the string "<script>" never appears at all.
+  check('card page: XSS escaped in og:description',
+    r.text.includes('&lt;script&gt;alert(1)&lt;/script&gt;') && !r.text.includes('<script>alert(1)</script>'));
+
+  // OG image endpoint
+  r = await get(`/og/${ogCardId}.png`);
+  check('/og/:id.png → 200', r.status === 200);
+  check('/og/:id.png: Content-Type image/png', r.headers.get('content-type') === 'image/png');
+  // PNG magic bytes: 89 50 4e 47 0d 0a 1a 0a
+  const pngBytes = r.buf.slice(0, 8);
+  check('/og/:id.png: valid PNG magic bytes',
+    pngBytes[0] === 0x89 && pngBytes[1] === 0x50 && pngBytes[2] === 0x4e && pngBytes[3] === 0x47 &&
+    pngBytes[4] === 0x0d && pngBytes[5] === 0x0a && pngBytes[6] === 0x1a && pngBytes[7] === 0x0a,
+    `got ${pngBytes.toString('hex')}`);
+
+  // Unknown card → serves brand image without crashing
+  r = await get('/og/000000.png');
+  check('/og/unknown → 200 (brand fallback)', r.status === 200);
+  check('/og/unknown: Content-Type image/png', r.headers.get('content-type') === 'image/png');
+  const brandBytes = r.buf.slice(0, 8);
+  check('/og/unknown: valid PNG magic bytes',
+    brandBytes[0] === 0x89 && brandBytes[1] === 0x50 && brandBytes[2] === 0x4e && brandBytes[3] === 0x47 &&
+    brandBytes[4] === 0x0d && brandBytes[5] === 0x0a && brandBytes[6] === 0x1a && brandBytes[7] === 0x0a);
+
+  // Unknown card page → serves plain shell, no meta tags, no crash
+  r = await get('/card/000000');
+  check('unknown card page → 200', r.status === 200);
+  check('unknown card page: no og tags', !r.text.includes('property="og:title"'));
+  check('unknown card page: original title', r.text.includes('<title>cardy — your tiny digital card</title>'));
+
+  // ---- profile photo ----
+  console.log('── profile photo');
+
+  const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+  r = await post('/api/cards', { name: 'photo1', age: 20, photo: TINY_PNG });
+  check('photo: valid png stored as-is', r.status === 201 && r.json.photo === TINY_PNG, JSON.stringify(r.json && r.json.photo));
+
+  r = await post('/api/cards', { name: 'photo2', age: 20, photo: 'data:text/html;base64,PHNjcmlwdD4=' });
+  check('photo: non-image mime dropped', r.status === 201 && !r.json.photo);
+
+  r = await post('/api/cards', { name: 'photo3', age: 20, photo: 'not a data uri' });
+  check('photo: garbage dropped', r.status === 201 && !r.json.photo);
+
+  // A photo near/over the 800KB cap already exceeds the 1MB JSON body limit,
+  // so the upload must be rejected outright (413), never accepted.
+  r = await post('/api/cards', { name: 'photo4', age: 20, photo: 'data:image/png;base64,' + 'A'.repeat(1100000) });
+  check('photo: oversized upload rejected → 413', r.status === 413, `got ${r.status} ${JSON.stringify(r.json)}`);
+
+  r = await post('/api/cards', { name: 'photo5', age: 20, photo: 'data:image/jpeg;base64,' + Buffer.from('fakejpegbytes').toString('base64') });
+  check('photo: jpeg accepted', r.status === 201 && /^data:image\/jpeg;base64,/.test(r.json.photo));
+
+  // A photo card must still produce a valid OG image (the photo layout).
+  r = await post('/api/cards', { name: 'photo OG', age: 22, photo: TINY_PNG });
+  const photoOgId = r.json && r.json.id;
+  if (photoOgId) {
+    r = await get(`/og/${photoOgId}.png`);
+    check('/og/:id.png with photo → 200 PNG', r.status === 200 && r.headers.get('content-type') === 'image/png');
+    const pb = r.buf.slice(0, 8);
+    check('/og/:id.png with photo: valid PNG magic bytes',
+      pb[0] === 0x89 && pb[1] === 0x50 && pb[2] === 0x4e && pb[3] === 0x47 &&
+      pb[4] === 0x0d && pb[5] === 0x0a && pb[6] === 0x1a && pb[7] === 0x0a);
+  }
+
+  // ---- one card per day + editing ----
+  console.log('── one card per day + editing');
+
+  // fetch() keeps no cookie jar, so capture the fingerprint the server issues
+  // and replay it so a series of requests looks like the same browser.
+  let c = await postWithCookie('/api/cards', { name: 'limit user', age: 30, country: 'Egypt' });
+  check('daily: first create → 201 + 16-hex fingerprint cookie',
+    c.status === 201 && /^[0-9a-f]{16}$/.test(c.fp), `cookie=${c.cookie.slice(0, 40)}`);
+  const fp = c.fp;
+  const limitCardId = c.json && c.json.id;
+  check('daily: response never exposes fingerprint', !('fingerprint' in (c.json || {})));
+
+  r = await postWithCookie('/api/cards', { name: 'second try', age: 31 }, 'cardy_fp=' + fp);
+  check('daily: same browser second card → 429 limit', r.status === 429 && r.json.error === 'limit', `got ${r.status} ${JSON.stringify(r.json)}`);
+  check('daily: 429 returns the existing card', r.json && r.json.card && r.json.card.id === limitCardId);
+
+  let dl = JSON.parse((await get('/api/daily-limit')).text);
+  check('daily-limit: fresh browser not limited', dl.limited === false);
+
+  dl = JSON.parse((await get('/api/daily-limit', { Cookie: 'cardy_fp=' + fp })).text);
+  check('daily-limit: created browser is limited', dl.limited === true);
+  check('daily-limit: returns the created card', Array.isArray(dl.cards) && dl.cards.some((card) => card.id === limitCardId));
+  check('daily-limit: cards never expose fingerprint', Array.isArray(dl.cards) && dl.cards.every((card) => !('fingerprint' in card)));
+
+  // Editing bypasses the daily limit, but only for the card's own browser.
+  r = await postWithCookie('/api/cards',
+    { name: 'limit user', age: 30, country: 'Egypt', aboutMe: 'edited!', _editId: limitCardId },
+    'cardy_fp=' + fp);
+  check('edit: same browser → 200 updated, same id', r.status === 200 && r.json.aboutMe === 'edited!' && r.json.id === limitCardId,
+    `got ${r.status} ${JSON.stringify(r.json)}`);
+  check('edit: response never exposes fingerprint', !('fingerprint' in (r.json || {})));
+
+  // Attach a photo through the edit flow, then confirm it persists publicly.
+  r = await postWithCookie('/api/cards',
+    { name: 'limit user', age: 30, country: 'Egypt', aboutMe: 'edited!', photo: TINY_PNG, _editId: limitCardId },
+    'cardy_fp=' + fp);
+  check('edit: photo saved', r.status === 200 && r.json.photo === TINY_PNG);
+  r = await get('/api/cards/' + limitCardId);
+  check('edit: photo visible via public GET', r.status === 200 && r.text.includes('data:image/png;base64,'));
+  check('public GET: no fingerprint leaked', r.status === 200 && !r.text.includes('fingerprint'));
+
+  // A stranger's browser (no cookie) cannot edit this card.
+  r = await postWithCookie('/api/cards', { name: 'hacker', age: 99, _editId: limitCardId });
+  check('edit: different browser → 403', r.status === 403);
+
+  r = await postWithCookie('/api/cards', { name: 'x', age: 10, _editId: '000000' }, 'cardy_fp=' + fp);
+  check('edit: unknown id → 404', r.status === 404);
+
+  // Simulate the next day by clearing today's limit key, then create a second
+  // card in the same browser and confirm the banner can list both cards.
+  const today = new Date().toISOString().slice(0, 10);
+  await adminRedis.del('cardy:daily:' + fp + ':' + today);
+  r = await postWithCookie('/api/cards', { name: 'second day', age: 32 }, 'cardy_fp=' + fp);
+  check('daily: next-day create → 201', r.status === 201, `got ${r.status} ${JSON.stringify(r.json)}`);
+  const secondDayId = r.json && r.json.id;
+
+  dl = JSON.parse((await get('/api/daily-limit', { Cookie: 'cardy_fp=' + fp })).text);
+  check('daily-limit: lists all cards across days',
+    dl.limited === true && Array.isArray(dl.cards) && dl.cards.length === 2 &&
+    dl.cards.some((card) => card.id === limitCardId) && dl.cards.some((card) => card.id === secondDayId),
+    JSON.stringify((dl.cards || []).map((card) => card.id)));
+  // Remove the per-browser index so nothing lingers in Redis.
+  await adminRedis.del('cardy:fp:' + fp);
 
   // ---- renderer ----
   console.log('── render-card.js');
@@ -252,13 +433,21 @@ async function main() {
   html = render({ name: 'x', socials: [] });
   check('empty socials → no Social section', !html.includes('Social'));
 
+  html = render({ name: 'photo', photo: TINY_PNG });
+  check('renderer: photo renders as circular img', html.includes('class="card-photo"') && html.includes('data:image/png;base64,'));
+
+  html = render({ name: 'photo', photo: 'data:image/png;base64,abc" onerror="alert(1)' });
+  check('renderer: photo src escaped, no attribute breakout',
+    html.includes('src="data:image/png;base64,abc&quot; onerror=&quot;alert(1)"') && !html.includes('" onerror="'),
+    html.slice(0, 160));
+
+  html = render({ name: 'plain' });
+  check('renderer: no photo → no card-photo img', !html.includes('card-photo'));
+
   // ---- admin dashboard ----
   console.log('── Admin dashboard');
 
   const ADMIN_PASS = 'testpass-123';
-  const { Redis } = require('@upstash/redis');
-  const adminRedis = Redis.fromEnv();
-  const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 
   // Make admin state deterministic: force the runtime password hash (backing
   // up anything already stored so we can restore it), and clear any stale
@@ -406,6 +595,37 @@ async function main() {
     check('admin: delete card → 200', r.status === 200);
     r = await get('/api/cards/' + adminCardId);
     check('admin: deleted card gone → 404', r.status === 404);
+
+    // bulk multi-select delete
+    const bulkIds = [];
+    for (let i = 0; i < 3; i++) {
+      const cr = await adminReq(login.token, 'POST', '/admin/api/cards', { name: 'bulk test ' + i, age: 20 + i }, csrf);
+      if (cr.status === 201) bulkIds.push(cr.json.id);
+    }
+    check('admin: bulk setup — 3 cards created', bulkIds.length === 3, JSON.stringify(bulkIds));
+
+    r = await adminReq(login.token, 'POST', '/admin/api/cards/bulk-delete', { ids: ['nothex', ...bulkIds.slice(0, 2)] }, csrf);
+    check('admin: bulk-delete skips bad ids, deletes 2', r.status === 200 && r.json.deleted === 2, JSON.stringify(r.json));
+
+    r = await adminReq(login.token, 'POST', '/admin/api/cards/bulk-delete', { ids: bulkIds.slice(0, 2) }, csrf);
+    check('admin: bulk-delete idempotent → 0 deleted', r.status === 200 && r.json.deleted === 0, JSON.stringify(r.json));
+
+    r = await adminReq(login.token, 'POST', '/admin/api/cards/bulk-delete', { ids: [] }, csrf);
+    check('admin: bulk-delete empty ids → 400', r.status === 400);
+
+    r = await adminReq(login.token, 'POST', '/admin/api/cards/bulk-delete', { ids: ['zzzzzz'] }, csrf);
+    check('admin: bulk-delete all-invalid ids → 400', r.status === 400);
+
+    r = await adminReq(login.token, 'POST', '/admin/api/cards/bulk-delete', { ids: [bulkIds[2]] });
+    check('admin: bulk-delete without csrf → 403', r.status === 403);
+
+    r = await adminReq(login.token, 'GET', '/admin/api/cards');
+    check('admin: bulk-deleted cards gone, survivor remains',
+      r.status === 200 &&
+      !r.json.some((c) => bulkIds.slice(0, 2).includes(c.id)) &&
+      r.json.some((c) => c.id === bulkIds[2]),
+      'missing survivor: ' + (bulkIds[2] || 'none'));
+    if (bulkIds[2]) await adminReq(login.token, 'DELETE', '/admin/api/cards/' + bulkIds[2], undefined, csrf);
 
     if (publicProbeId) await adminReq(login.token, 'DELETE', '/admin/api/cards/' + publicProbeId, undefined, csrf);
 

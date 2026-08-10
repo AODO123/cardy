@@ -30,6 +30,7 @@
     "url": "https://github.com/AODO123/cardy/issues"
   },
   "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@upstash/redis": "^1.38.2",
     "dotenv": "^17.4.2",
     "express": "^4.21.2"

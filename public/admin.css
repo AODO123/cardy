@@ -160,6 +160,40 @@ button.primary.sm {
 
 .card-row-actions { display: flex; gap: 6px; }
 
+/* --- bulk delete selection --- */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--error);
+  border-radius: 12px;
+  background: rgba(255, 107, 107, 0.08);
+}
+
+#bulk-count {
+  flex: 1;
+  font-size: 13px;
+  color: var(--error);
+  font-weight: 600;
+}
+
+.card-check {
+  flex-shrink: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+}
+
+.card-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* reuse the gold badge from the digital card */
 .owner-badge {
   display: inline-block;

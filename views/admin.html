@@ -30,6 +30,11 @@
           <button id="new-card" class="primary sm">+ New card</button>
         </div>
       </div>
+      <div id="bulk-bar" class="bulk-bar" hidden>
+        <span id="bulk-count"></span>
+        <button id="bulk-delete" class="btn-ghost sm danger">Delete selected</button>
+        <button id="bulk-clear" class="btn-ghost sm">Clear</button>
+      </div>
       <p id="stats" class="panel-intro"></p>
       <div id="cards-list"></div>
       <p id="empty" class="hint" hidden>No cards yet.</p>
@@ -124,6 +129,7 @@
     // Session CSRF token + the card list we hold in memory.
     let csrf = null;
     let cards = [];
+    const selected = new Set(); // ids checked for bulk delete
 
     async function api(path, opts = {}) {
       const res = await fetch(path, {
@@ -169,9 +175,9 @@
         const cardLink = c.shareUrl || (location.origin + '/card/' + c.id);
         const linkRow = '<div class="card-row-link">' +
           '<a href="' + escapeHtml(cardLink) + '" target="_blank" rel="noopener">/card/' + escapeHtml(c.id) + '</a>' +
-          (c.bitlyUrl ? ' &middot; <a href="' + escapeHtml(c.bitlyUrl) + '" target="_blank" rel="noopener">bit.ly</a>' : '') +
           '</div>';
         return '<div class="card-row' + (c.owner ? ' is-owner' : '') + '">' +
+          '<label class="card-check" title="Select for deletion"><input type="checkbox" data-check="' + c.id + '"' + (selected.has(c.id) ? ' checked' : '') + '></label>' +
           '<div class="card-row-main">' +
             '<div class="card-row-name">' + escapeHtml(c.name || '(no name)') +
               (c.owner ? ' <span class="owner-badge">Owner</span>' : '') + '</div>' +
@@ -215,6 +221,47 @@
     });
 
     $('#search').addEventListener('input', render);
+
+    // Multi-select for bulk delete.
+    function updateBulkBar() {
+      const n = selected.size;
+      $('#bulk-bar').hidden = n === 0;
+      $('#bulk-count').textContent = n + (n === 1 ? ' card selected' : ' cards selected');
+    }
+
+    $('#cards-list').addEventListener('change', (e) => {
+      const box = e.target.closest('[data-check]');
+      if (!box) return;
+      if (box.checked) selected.add(box.dataset.check); else selected.delete(box.dataset.check);
+      updateBulkBar();
+    });
+
+    $('#bulk-delete').addEventListener('click', async () => {
+      if (!selected.size) return;
+      const n = selected.size;
+      if (!confirm('Delete ' + n + (n === 1 ? ' card' : ' cards') + '? This cannot be undone.')) return;
+      const ids = Array.from(selected);
+      const { status, data } = await api('/admin/api/cards/bulk-delete', {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+        csrf: true,
+      });
+      if (status === 200 && data && data.deleted) {
+        cards = cards.filter((c) => !selected.has(c.id));
+        selected.clear();
+        updateBulkBar();
+        render();
+        toast(data.deleted + (data.deleted === 1 ? ' card deleted.' : ' cards deleted.'));
+      } else {
+        toast((data && data.error) || 'Could not delete cards.');
+      }
+    });
+
+    $('#bulk-clear').addEventListener('click', () => {
+      selected.clear();
+      updateBulkBar();
+      render();
+    });
 
     // Create / edit modal.
     function socialRow(platform, handle) {

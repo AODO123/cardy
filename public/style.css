@@ -208,6 +208,94 @@ input:focus, textarea:focus, select:focus {
 
 .role-icon { height: 18px; width: 18px; vertical-align: middle; border-radius: 3px; }
 
+/* --- photo upload --- */
+.photo-field { margin-bottom: 14px; }
+
+.photo-drop {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  margin-top: 8px;
+  border: 1.5px dashed var(--border);
+  border-radius: 14px;
+  background: var(--panel-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.photo-drop:hover { border-color: var(--accent); }
+
+.photo-drop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.photo-drop.dragging {
+  border-color: var(--accent);
+  background: rgba(139, 123, 255, 0.12);
+}
+
+.photo-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+.photo-plus {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  transition: border-color .15s ease, color .15s ease;
+}
+
+.photo-drop:hover .photo-plus {
+  border-color: var(--accent);
+  color: var(--accent-soft);
+}
+
+.photo-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.photo-drop.has-photo { border-style: solid; }
+
+.photo-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #fff;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.photo-remove:hover:not(:disabled) { background: var(--error); }
+
 textarea { resize: vertical; }
 
 button {
@@ -351,6 +439,17 @@ button.primary:hover:not(:disabled) { background: var(--accent-soft); }
   line-height: 1.2;
 }
 
+.card-photo {
+  display: block;
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.85);
+  margin: 0 auto 14px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
 /* Owner card — the site owner's card gets a gold name and a small badge */
 .owner-name { color: #ffd166; }
 
@@ -477,6 +576,55 @@ button.primary:hover:not(:disabled) { background: var(--accent-soft); }
   padding: 2px 6px;
   border-radius: 6px;
   font-size: 12px;
+}
+
+/* --- daily limit banner --- */
+.limit-banner {
+  max-width: 880px;
+  margin: 20px auto 0;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.limit-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.limit-text strong { font-size: 16px; }
+
+.limit-text span { color: var(--muted); font-size: 14px; }
+
+.limit-links {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.limit-links a {
+  background: rgba(139, 123, 255, 0.14);
+  border: 1px solid rgba(139, 123, 255, 0.4);
+  color: var(--accent-soft);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.limit-links a:hover { background: rgba(139, 123, 255, 0.22); }
+
+#limit-edit { margin-top: 12px; width: 100%; padding: 10px 16px; }
+
+/* When today's limit is hit, the whole page recedes behind a darker veil. */
+.limited .panel {
+  opacity: 0.45;
+  filter: grayscale(0.7);
+  transition: opacity .2s ease, filter .2s ease;
 }
 
 .site-footer {

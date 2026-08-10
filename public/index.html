@@ -14,9 +14,18 @@
     <span class="tagline">your tiny digital card</span>
   </header>
 
+  <div id="limit-banner" class="limit-banner" hidden>
+    <div class="limit-text">
+      <strong id="limit-title"></strong>
+      <span id="limit-sub"></span>
+    </div>
+    <div id="limit-links" class="limit-links"></div>
+    <button type="button" id="limit-edit" class="primary">Edit my card</button>
+  </div>
+
   <main class="wrap">
     <section class="panel">
-      <h1>Create your card</h1>
+      <h1 id="form-title">Create your card</h1>
       <p class="panel-intro">Tell people who you are. Optional fields can be left blank.</p>
 
       <form id="card-form" autocomplete="off">
@@ -24,6 +33,19 @@
           Name <em>*</em>
           <input name="name" required placeholder="john doe">
         </label>
+
+        <div class="field-group photo-field">
+          <label class="group-label">Photo <span class="optional">optional</span></label>
+          <div id="photo-drop" class="photo-drop" role="button" tabindex="0" aria-label="Add a photo">
+            <input id="photo-input" type="file" accept="image/*" hidden>
+            <img id="photo-preview" class="photo-preview" alt="" hidden>
+            <div id="photo-placeholder" class="photo-placeholder">
+              <span class="photo-plus">+</span>
+              <span>Photo</span>
+            </div>
+            <button type="button" id="photo-remove" class="photo-remove" aria-label="Remove photo" title="Remove photo" hidden>&times;</button>
+          </div>
+        </div>
 
         <fieldset class="role">
           <legend>What do you do?</legend>
@@ -119,7 +141,7 @@
           </datalist>
         </div>
 
-        <button type="submit" class="primary">Create card</button>
+        <button type="submit" id="submit-btn" class="primary">Create card</button>
         <p id="form-error" class="error" hidden></p>
       </form>
     </section>
@@ -133,10 +155,6 @@
         <div class="link-row">
           <a id="share-link" target="_blank" rel="noopener"></a>
           <button type="button" data-copy="share-link">Copy</button>
-        </div>
-        <div class="link-row" id="bitly-row" hidden>
-          <a id="bitly-link" target="_blank" rel="noopener"></a>
-          <button type="button" data-copy="bitly-link">Copy</button>
         </div>
       </div>
     </section>
@@ -154,8 +172,25 @@
     const result = document.getElementById('result');
     const formError = document.getElementById('form-error');
     const shareLink = document.getElementById('share-link');
-    const bitlyRow = document.getElementById('bitly-row');
-    const bitlyLink = document.getElementById('bitly-link');
+    const resultTitle = result.querySelector('h2');
+    const formTitle = document.getElementById('form-title');
+    const submitBtn = document.getElementById('submit-btn');
+
+    // Photo upload state.
+    const photoDrop = document.getElementById('photo-drop');
+    const photoInput = document.getElementById('photo-input');
+    const photoPreview = document.getElementById('photo-preview');
+    const photoPlaceholder = document.getElementById('photo-placeholder');
+    const photoRemove = document.getElementById('photo-remove');
+    let photoData = ''; // base64 data URI; '' means no photo
+
+    // Daily-limit + edit state.
+    const limitBanner = document.getElementById('limit-banner');
+    const limitTitle = document.getElementById('limit-title');
+    const limitSub = document.getElementById('limit-sub');
+    const limitLinks = document.getElementById('limit-links');
+    const limitEdit = document.getElementById('limit-edit');
+    let editingId = null;
 
     // Every country, for the dropdown.
     const COUNTRIES = [
@@ -201,6 +236,152 @@
     // The platforms we take a username for.
     const PLATFORMS = ['discord', 'x', 'instagram', 'tiktok'];
 
+    // --- photo upload ---
+    function setPhoto(dataUri) {
+      photoData = dataUri;
+      if (dataUri) {
+        photoPreview.src = dataUri;
+        photoPreview.hidden = false;
+        photoPlaceholder.hidden = true;
+        photoRemove.hidden = false;
+        photoDrop.classList.add('has-photo');
+      } else {
+        photoPreview.removeAttribute('src');
+        photoPreview.hidden = true;
+        photoPlaceholder.hidden = false;
+        photoRemove.hidden = true;
+        photoDrop.classList.remove('has-photo');
+      }
+      renderCardData(currentData(), preview);
+    }
+
+    // Resize the picked image to a 400×400 JPEG on a canvas, so the stored
+    // card stays small and the photo is always square regardless of input.
+    function readPhotoFile(file) {
+      if (!file || !file.type || !file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const size = 400;
+          const canvas = document.createElement('canvas');
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext('2d');
+          const side = Math.min(img.width, img.height);
+          ctx.drawImage(
+            img,
+            (img.width - side) / 2, (img.height - side) / 2, side, side,
+            0, 0, size, size
+          );
+          setPhoto(canvas.toDataURL('image/jpeg', 0.85));
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    photoDrop.addEventListener('click', () => photoInput.click());
+    photoDrop.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        photoInput.click();
+      }
+    });
+    photoDrop.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      photoDrop.classList.add('dragging');
+    });
+    photoDrop.addEventListener('dragleave', () => photoDrop.classList.remove('dragging'));
+    photoDrop.addEventListener('drop', (e) => {
+      e.preventDefault();
+      photoDrop.classList.remove('dragging');
+      readPhotoFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+    });
+    photoInput.addEventListener('change', () => {
+      readPhotoFile(photoInput.files[0]);
+      photoInput.value = '';
+    });
+    photoRemove.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setPhoto('');
+    });
+
+    // --- one card per day + editing ---
+    // Fill the form with an existing card and switch to edit mode. The daily
+    // limit never applies to editing your own card.
+    function startEditing(card) {
+      editingId = card.id;
+      form.elements.name.value = card.name || '';
+      form.elements.age.value = card.age != null ? card.age : '';
+      form.elements.country.value = card.country || '';
+      const roleEl = form.elements.role;
+      for (const r of roleEl) if (r.value === (card.role || 'job')) r.checked = true;
+      form.elements.roleLabel.value = card.roleLabel || '';
+      form.elements.aboutMe.value = card.aboutMe || '';
+      form.elements.website.value = card.website || '';
+      form.elements.mbti.value = card.mbti || '';
+      form.elements.interests.value = card.interests || '';
+      form.elements.favoriteSong.value = card.favoriteSong || '';
+      form.elements.favoriteMovie.value = card.favoriteMovie || '';
+      for (const s of card.socials || []) {
+        const el = form.elements['social_' + s.platform];
+        if (el) el.value = s.handle || '';
+      }
+      setPhoto(card.photo || '');
+
+      formTitle.textContent = 'Edit your card';
+      submitBtn.textContent = 'Update card';
+      document.body.classList.remove('limited');
+      form.removeAttribute('inert');
+      limitBanner.hidden = true;
+      form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // Ask the server whether this browser hit today's limit. When it has,
+    // dim the create form and explain; otherwise offer editing of old cards.
+    async function checkLimit() {
+      let data;
+      try {
+        const res = await fetch('/api/daily-limit');
+        data = await res.json();
+      } catch {
+        return; // leave the form normal if the check fails
+      }
+      const limited = !!(data && data.limited);
+      const cards = (data && data.cards) || [];
+
+      if (limited) {
+        document.body.classList.add('limited');
+        form.setAttribute('inert', '');
+        limitTitle.textContent = 'You already created a card today';
+        limitSub.textContent = 'Come back tomorrow to make another one — or edit the card you have.';
+      } else if (cards.length) {
+        document.body.classList.remove('limited');
+        form.removeAttribute('inert');
+        limitTitle.textContent = 'You already have a card';
+        limitSub.textContent = 'You can make a new one today, or keep editing the one you have.';
+      } else {
+        document.body.classList.remove('limited');
+        form.removeAttribute('inert');
+        limitBanner.hidden = true;
+        return;
+      }
+
+      limitLinks.innerHTML = '';
+      for (const c of cards) {
+        const a = document.createElement('a');
+        a.href = c.shareUrl || ('/card/' + c.id);
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.textContent = (c.name || 'Your') + '’s card';
+        limitLinks.appendChild(a);
+      }
+      limitEdit.hidden = false;
+      limitEdit.onclick = () => startEditing(data.today || cards[cards.length - 1]);
+      limitBanner.hidden = false;
+    }
+
     // Read the form into the same shape the API expects.
     function val(name) {
       const el = form.elements[name];
@@ -211,7 +392,7 @@
       const socials = PLATFORMS
         .filter((p) => val('social_' + p))
         .map((p) => ({ platform: p, handle: val('social_' + p).trim() }));
-      return {
+      const data = {
         name: val('name'),
         age: val('age'),
         country: val('country'),
@@ -224,7 +405,10 @@
         interests: val('interests'),
         favoriteSong: val('favoriteSong'),
         favoriteMovie: val('favoriteMovie'),
+        photo: photoData || null,
       };
+      if (editingId) data._editId = editingId;
+      return data;
     }
 
     form.addEventListener('input', () => renderCardData(currentData(), preview));
@@ -232,35 +416,35 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       formError.hidden = true;
-      const res = await fetch('/api/cards', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(currentData()),
-      });
+      try {
+        const res = await fetch('/api/cards', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(currentData()),
+        });
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        formError.textContent = data.error || 'Something went wrong. Try again.';
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          formError.textContent = data.error || 'Something went wrong. Try again.';
+          formError.hidden = false;
+          return;
+        }
+
+        const card = await res.json();
+        renderCardData(card, preview);
+
+        resultTitle.textContent = editingId ? 'Your card is updated! 🎉' : 'Your card is live! 🎉';
+        shareLink.href = card.shareUrl;
+        shareLink.textContent = card.shareUrl;
+
+        result.hidden = false;
+        result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        checkLimit(); // a fresh create now blocks until tomorrow
+      } catch {
+        formError.textContent = 'Something went wrong. Try again.';
         formError.hidden = false;
-        return;
       }
-
-      const card = await res.json();
-      renderCardData(card, preview);
-
-      shareLink.href = card.shareUrl;
-      shareLink.textContent = card.shareUrl;
-
-      if (card.bitlyUrl) {
-        bitlyLink.href = card.bitlyUrl;
-        bitlyLink.textContent = card.bitlyUrl;
-        bitlyRow.hidden = false;
-      } else {
-        bitlyRow.hidden = true;
-      }
-
-      result.hidden = false;
-      result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     });
 
     document.querySelectorAll('[data-copy]').forEach((btn) => {
@@ -277,6 +461,7 @@
     });
 
     renderCardData(currentData(), preview);
+    checkLimit();
   </script>
 </body>
 </html>
