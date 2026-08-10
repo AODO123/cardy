@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>cardy — admin sign in</title>
+  <link rel="icon" type="image/png" href="/cardy.png">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+  <main class="admin-login">
+    <a class="logo" href="/"><img src="/cardy.png" alt="" class="logo-img"> cardy</a>
+    <h1>Admin sign in</h1>
+    <p class="panel-intro">Restricted area — authorized access only.</p>
+
+    <form id="login-form" autocomplete="off">
+      <label>
+        Password
+        <input name="password" type="password" required autofocus autocomplete="current-password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;">
+      </label>
+      <button type="submit" class="primary" id="login-btn">Sign in</button>
+      <p id="error" class="error" hidden></p>
+    </form>
+
+    <p class="hint" style="margin-top: 16px;"><a href="/">Back to cardy</a></p>
+  </main>
+
+  <script>
+    const form = document.getElementById('login-form');
+    const error = document.getElementById('error');
+    const btn = document.getElementById('login-btn');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      error.hidden = true;
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      try {
+        const res = await fetch('/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: form.password.value }),
+        });
+        if (res.ok) {
+          location.href = '/admin';
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        error.textContent = data.error || 'Sign in failed.';
+        error.hidden = false;
+      } catch {
+        error.textContent = 'Network error. Please try again.';
+        error.hidden = false;
+      }
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+    });
+  </script>
+</body>
+</html>

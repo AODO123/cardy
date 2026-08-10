@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>cardy — admin dashboard</title>
+  <link rel="icon" type="image/png" href="/cardy.png">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+  <header class="admin-topbar">
+    <div class="admin-brand">
+      <img src="/cardy.png" alt="" class="logo-img"> cardy <span class="tagline">admin</span>
+    </div>
+    <nav class="admin-nav">
+      <a class="btn-link" href="/">View site</a>
+      <button id="open-password" class="btn-ghost">Change password</button>
+      <button id="logout" class="btn-ghost">Sign out</button>
+    </nav>
+  </header>
+
+  <main class="admin-main">
+    <section class="panel">
+      <div class="admin-head">
+        <h1>Cards</h1>
+        <div class="admin-tools">
+          <input id="search" type="search" placeholder="Search by name&hellip;">
+          <button id="new-card" class="primary sm">+ New card</button>
+        </div>
+      </div>
+      <p id="stats" class="panel-intro"></p>
+      <div id="cards-list"></div>
+      <p id="empty" class="hint" hidden>No cards yet.</p>
+    </section>
+  </main>
+
+  <!-- Edit / new card modal -->
+  <dialog id="card-modal">
+    <form id="card-form">
+      <h2 id="modal-title">Edit card</h2>
+      <div class="modal-body">
+        <div class="row">
+          <label>Name <em>*</em><input name="name" required placeholder="john doe"></label>
+          <label>Age <em>*</em><input name="age" type="number" min="1" max="130" required placeholder="20"></label>
+        </div>
+        <div class="row">
+          <label>Country <span class="optional">optional</span><input name="country" placeholder="Canada"></label>
+          <label>Job title / field of study <span class="optional">optional</span><input name="roleLabel" placeholder="Software Engineer"></label>
+        </div>
+        <fieldset class="role">
+          <legend>I am a&hellip;</legend>
+          <label class="radio"><input type="radio" name="role" value="job"> &#128188; Job</label>
+          <label class="radio"><input type="radio" name="role" value="student"> &#127891; Student</label>
+        </fieldset>
+        <label>About me <span class="optional">optional</span><textarea name="aboutMe" rows="3" placeholder="Tell people a bit about yourself&hellip;"></textarea></label>
+        <div class="field-group">
+          <label class="group-label">Social media <span class="optional">optional</span></label>
+          <div id="social-rows"></div>
+          <button type="button" id="add-social" class="btn-ghost sm">+ Add social</button>
+        </div>
+        <label>Website <span class="optional">optional</span><input name="website" inputmode="url" placeholder="https://yoursite.com"></label>
+        <div class="row">
+          <label>Personality / MBTI <span class="optional">optional</span><input name="mbti" placeholder="e.g. INFJ"></label>
+          <label>Interests <span class="optional">optional</span><input name="interests" placeholder="e.g. photography"></label>
+        </div>
+        <div class="row">
+          <label>Favorite song <span class="optional">optional</span><input name="favoriteSong" placeholder="e.g. Billie Jean"></label>
+          <label>Favorite movie / series <span class="optional">optional</span><input name="favoriteMovie" placeholder="e.g. The Matrix"></label>
+        </div>
+        <label class="owner-field"><input type="checkbox" name="owner"> Mark as <strong>owner</strong> card — gold name + badge on the card</label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="modal-cancel" class="btn-ghost">Cancel</button>
+        <button type="submit" class="primary">Save card</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Change password modal -->
+  <dialog id="pw-modal">
+    <form id="pw-form">
+      <h2>Change admin password</h2>
+      <label>Current password<input name="currentPassword" type="password" required autocomplete="current-password"></label>
+      <label>New password (min 8 characters)<input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+      <label>Confirm new password<input name="confirm" type="password" minlength="8" required autocomplete="new-password"></label>
+      <p id="pw-error" class="error" hidden></p>
+      <div class="modal-actions">
+        <button type="button" id="pw-cancel" class="btn-ghost">Cancel</button>
+        <button type="submit" class="primary">Update password</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script>
+    const PLATFORMS = ['discord', 'x', 'instagram', 'tiktok', 'spotify'];
+
+    // --- tiny helpers ------------------------------------------------------
+    const $ = (sel) => document.querySelector(sel);
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+    function toast(msg) {
+      const t = $('#toast');
+      t.textContent = msg;
+      t.hidden = false;
+      clearTimeout(t._timer);
+      t._timer = setTimeout(() => (t.hidden = true), 3500);
+    }
+
+    // --- state ---------------------------------------------------------------
+    let csrf = null;
+    let cards = [];
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(opts.csrf ? { 'X-CSRF-Token': csrf } : {}),
+        },
+        ...opts,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) { location.href = '/admin'; throw new Error('unauthenticated'); }
+      return { status: res.status, data };
+    }
+
+    // --- loading + rendering --------------------------------------------------
+    async function loadCards() {
+      const { data } = await api('/admin/api/cards');
+      cards = Array.isArray(data) ? data : [];
+      render();
+    }
+
+    function render() {
+      const q = $('#search').value.trim().toLowerCase();
+      const list = cards
+        .filter((c) => !q || (c.name || '').toLowerCase().includes(q))
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+      $('#stats').textContent = cards.length + (cards.length === 1 ? ' card' : ' cards') +
+        (q ? ' · ' + list.length + ' matching' : '');
+      $('#empty').hidden = list.length > 0;
+
+      const el = $('#cards-list');
+      el.innerHTML = list.map((c) => {
+        const meta = [
+          c.age ? '&#127874; ' + escapeHtml(c.age) : '',
+          c.country ? '&#128205; ' + escapeHtml(c.country) : '',
+          c.role === 'student' ? '&#127891; student' : '&#128188; job',
+        ].filter(Boolean).join(' &middot; ');
+        const socials = (Array.isArray(c.socials) ? c.socials : [])
+          .map((s) => '<span class="mini-chip">' + escapeHtml(s.platform) + '</span>')
+          .join(' ');
+        const created = c.createdAt ? new Date(c.createdAt).toLocaleDateString() : '';
+        return '<div class="card-row' + (c.owner ? ' is-owner' : '') + '">' +
+          '<div class="card-row-main">' +
+            '<div class="card-row-name">' + escapeHtml(c.name || '(no name)') +
+              (c.owner ? ' <span class="owner-badge">Owner</span>' : '') + '</div>' +
+            (meta ? '<div class="card-row-meta">' + meta + '</div>' : '') +
+            (socials ? '<div class="card-row-socials">' + socials + '</div>' : '') +
+          '</div>' +
+          '<div class="card-row-side">' +
+            '<span class="card-row-date">' + escapeHtml(created) + '</span>' +
+            '<div class="card-row-actions">' +
+              '<button class="btn-ghost sm" data-act="owner" data-id="' + c.id + '" title="Toggle owner">' +
+                (c.owner ? '&#9733;' : '&#9734;') + '</button>' +
+              '<button class="btn-ghost sm" data-act="edit" data-id="' + c.id + '">Edit</button>' +
+              '<button class="btn-ghost sm danger" data-act="delete" data-id="' + c.id + '">Delete</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    $('#cards-list').addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      const card = cards.find((c) => c.id === id);
+      if (btn.dataset.act === 'edit' && card) openCardModal(card);
+      if (btn.dataset.act === 'owner' && card) {
+        await saveCard({ ...card, owner: !card.owner }, id);
+      }
+      if (btn.dataset.act === 'delete' && card) {
+        if (!confirm('Delete the card for "' + card.name + '"? This cannot be undone.')) return;
+        const { status } = await api('/admin/api/cards/' + id, { method: 'DELETE', csrf: true });
+        if (status === 200) {
+          cards = cards.filter((c) => c.id !== id);
+          render();
+          toast('Card deleted.');
+        } else {
+          toast('Could not delete the card.');
+        }
+      }
+    });
+
+    $('#search').addEventListener('input', render);
+
+    // --- create / edit -------------------------------------------------------
+    function socialRow(platform, handle) {
+      const row = document.createElement('div');
+      row.className = 'social-edit-row';
+      row.innerHTML =
+        '<select>' + PLATFORMS.map((p) =>
+          '<option value="' + p + '"' + (p === platform ? ' selected' : '') + '>' + p + '</option>').join('') + '</select>' +
+        '<input placeholder="username" value="' + escapeHtml(handle || '') + '">' +
+        '<button type="button" class="btn-ghost sm" title="Remove">&times;</button>';
+      row.querySelector('button').addEventListener('click', () => row.remove());
+      return row;
+    }
+
+    function collectSocials() {
+      return Array.from(document.querySelectorAll('#social-rows .social-edit-row'))
+        .map((row) => ({
+          platform: row.querySelector('select').value,
+          handle: row.querySelector('input').value.trim(),
+        }))
+        .filter((s) => s.handle);
+    }
+
+    function openCardModal(card) {
+      editingId = card ? card.id : null;
+      $('#modal-title').textContent = card ? 'Edit card' : 'New card';
+      const f = $('#card-form');
+      f.reset();
+      f.name.value = (card && card.name) || '';
+      f.age.value = (card && card.age) || '';
+      f.country.value = (card && card.country) || '';
+      f.role.value = (card && card.role === 'student') ? 'student' : 'job';
+      f.roleLabel.value = (card && card.roleLabel) || '';
+      f.aboutMe.value = (card && card.aboutMe) || '';
+      f.website.value = (card && card.website) || '';
+      f.mbti.value = (card && card.mbti) || '';
+      f.interests.value = (card && card.interests) || '';
+      f.favoriteSong.value = (card && card.favoriteSong) || '';
+      f.favoriteMovie.value = (card && card.favoriteMovie) || '';
+      f.owner.checked = !!(card && card.owner);
+
+      const rows = $('#social-rows');
+      rows.innerHTML = '';
+      const socials = (card && Array.isArray(card.socials)) ? card.socials : [];
+      if (socials.length) socials.forEach((s) => rows.appendChild(socialRow(s.platform, s.handle)));
+      else rows.appendChild(socialRow('discord', ''));
+
+      $('#card-modal').showModal();
+    }
+
+    $('#add-social').addEventListener('click', () => {
+      $('#social-rows').appendChild(socialRow('discord', ''));
+    });
+    $('#modal-cancel').addEventListener('click', () => $('#card-modal').close());
+
+    $('#card-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = $('#card-form');
+      const payload = {
+        name: f.name.value,
+        age: f.age.value,
+        country: f.country.value,
+        role: f.role.value || 'job',
+        roleLabel: f.roleLabel.value,
+        aboutMe: f.aboutMe.value,
+        socials: collectSocials(),
+        website: f.website.value,
+        mbti: f.mbti.value,
+        interests: f.interests ? f.interests.value : '',
+        favoriteSong: f.favoriteSong.value,
+        favoriteMovie: f.favoriteMovie.value,
+        owner: f.owner.checked,
+      };
+      await saveCard(payload, editingId);
+      $('#card-modal').close();
+    });
+
+    let editingId = null;
+
+    async function saveCard(payload, id) {
+      const { status, data } = await api(id ? '/admin/api/cards/' + id : '/admin/api/cards', {
+        method: id ? 'PATCH' : 'POST',
+        body: JSON.stringify(payload),
+        csrf: true,
+      });
+      if (status === 200 || status === 201) {
+        const saved = { ...data, id: id || data.id };
+        const idx = cards.findIndex((c) => c.id === saved.id);
+        if (idx >= 0) cards[idx] = saved; else cards.push(saved);
+        render();
+        toast(id ? 'Card updated.' : 'Card created.');
+      } else {
+        toast((data && data.error) || 'Save failed.');
+      }
+    }
+
+    // --- password + logout ----------------------------------------------------
+    $('#open-password').addEventListener('click', () => {
+      $('#pw-form').reset();
+      $('#pw-error').hidden = true;
+      $('#pw-modal').showModal();
+    });
+    $('#pw-cancel').addEventListener('click', () => $('#pw-modal').close());
+
+    $('#pw-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = $('#pw-form');
+      const err = $('#pw-error');
+      err.hidden = true;
+      if (f.password.value !== f.confirm.value) {
+        err.textContent = 'New passwords do not match.';
+        err.hidden = false;
+        return;
+      }
+      const { status, data } = await api('/admin/api/password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword: f.currentPassword.value, password: f.password.value }),
+        csrf: true,
+      });
+      if (status === 200) {
+        $('#pw-modal').close();
+        toast('Password updated.');
+      } else {
+        err.textContent = (data && data.error) || 'Could not update password.';
+        err.hidden = false;
+      }
+    });
+
+    $('#logout').addEventListener('click', async () => {
+      await fetch('/admin/logout', { method: 'POST' });
+      location.href = '/';
+    });
+
+    $('#new-card').addEventListener('click', () => openCardModal(null));
+
+    // --- init -----------------------------------------------------------------
+    (async () => {
+      const { data } = await api('/admin/api/me', {});
+      csrf = data.csrf;
+      await loadCards();
+    })().catch(() => { /* api() already redirects to login on 401 */ });
+  </script>
+</body>
+</html>

@@ -3,56 +3,41 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>cardy</title>
+  <title>cardy — your tiny digital card</title>
+  <link rel="icon" type="image/png" href="/cardy.png">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header class="site-header">
-    <a class="logo" href="/">cardy</a>
+    <a class="logo" href="/"><img src="/cardy.png" alt="" class="logo-img"> cardy</a>
     <span class="tagline">your tiny digital card</span>
   </header>
 
   <main class="wrap">
-    <section class="panel" style="grid-column: 1 / -1; max-width: 420px; justify-self: center;">
+    <section class="panel card-panel">
       <div id="card" class="digital-card"></div>
       <p id="message" class="hint" style="margin-top: 16px;"></p>
+      <a class="card-cta" href="/">Create your own card</a>
     </section>
   </main>
 
   <footer class="site-footer">
-    Made with <span class="logo">cardy</span>
+    <p>&copy; 2026 cardy &middot; All rights reserved</p>
+    <p>Created by Costa</p>
   </footer>
 
+  <script src="/render-card.js"></script>
   <script>
     const id = location.pathname.split('/').filter(Boolean).pop();
     const el = document.getElementById('card');
     const msg = document.getElementById('message');
-
-    function escapeHtml(str) {
-      return String(str).replace(/[&<>"']/g, (c) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-      }[c]));
-    }
 
     fetch('/api/cards/' + encodeURIComponent(id))
       .then(async (res) => {
         if (!res.ok) throw new Error('not-found');
         const card = await res.json();
         document.title = card.name + ' — cardy';
-
-        const emoji = card.role === 'student' ? '&#127891;' : '&#128188;';
-        const roleLine = card.roleLabel || (card.role === 'student' ? 'Student' : 'Job');
-        const meta = [
-          card.age ? '\u{1F382} ' + escapeHtml(card.age) : '',
-          card.country ? '\u{1F4CD} ' + escapeHtml(card.country) : '',
-        ].filter(Boolean).join(' &middot; ');
-
-        el.innerHTML =
-          '<div class="card-name">' + escapeHtml(card.name) + '</div>' +
-          '<div class="card-role">' + emoji + ' ' + escapeHtml(roleLine) + '</div>' +
-          (meta ? '<div class="card-meta">' + meta + '</div>' : '') +
-          (card.notes ? '<div class="card-notes">' + escapeHtml(card.notes) + '</div>' : '');
-
+        renderCardData(card, el);
         msg.innerHTML = '&#128279; This card lives at <code>' + escapeHtml(location.href) + '</code>';
       })
       .catch(() => {

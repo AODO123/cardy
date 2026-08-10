@@ -3,34 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>cardy — create your digital card</title>
+  <meta name="description" content="Create a tiny digital card about yourself and share it with one link.">
+  <title>cardy — your tiny digital card</title>
+  <link rel="icon" type="image/png" href="/cardy.png">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header class="site-header">
-    <span class="logo">cardy</span>
+    <a class="logo" href="/"><img src="/cardy.png" alt="" class="logo-img"> cardy</a>
     <span class="tagline">your tiny digital card</span>
   </header>
 
   <main class="wrap">
     <section class="panel">
       <h1>Create your card</h1>
+      <p class="panel-intro">Tell people who you are. Optional fields can be left blank.</p>
+
       <form id="card-form" autocomplete="off">
         <label>
           Name <em>*</em>
-          <input name="name" required placeholder="Ada Lovelace">
+          <input name="name" required placeholder="john doe">
         </label>
-
-        <div class="row">
-          <label>
-            Age
-            <input name="age" type="number" min="1" max="130" placeholder="36">
-          </label>
-          <label>
-            Country
-            <input name="country" placeholder="United Kingdom">
-          </label>
-        </div>
 
         <fieldset class="role">
           <legend>I am a&hellip;</legend>
@@ -38,15 +31,85 @@
           <label class="radio"><input type="radio" name="role" value="student"> &#127891; Student</label>
         </fieldset>
 
-        <label id="role-label-wrap">
-          Job title / field of study
+        <label>
+          Job title / field of study <span class="optional">optional</span>
           <input name="roleLabel" placeholder="Software Engineer">
         </label>
 
+        <div class="row">
+          <label>
+            Age <em>*</em>
+            <input name="age" type="number" min="1" max="130" placeholder="20" required>
+          </label>
+          <label>
+            Country <span class="optional">optional</span>
+            <select name="country" id="country"></select>
+          </label>
+        </div>
+
         <label>
-          Notes
-          <textarea name="notes" rows="4" placeholder="Say something about yourself&hellip;"></textarea>
+          About me <span class="optional">optional</span>
+          <textarea name="aboutMe" rows="4" placeholder="Tell people a bit about yourself&hellip;"></textarea>
         </label>
+
+        <div class="field-group">
+          <label class="group-label">Social media <span class="optional">optional</span></label>
+          <div class="social-inputs">
+            <div class="social-input-row">
+              <img src="/discord.png" alt="" class="platform-icon">
+              <input name="social_discord" placeholder="username">
+            </div>
+            <div class="social-input-row">
+              <img src="/x.png" alt="" class="platform-icon">
+              <input name="social_x" placeholder="username">
+            </div>
+            <div class="social-input-row">
+              <img src="/instagram.png" alt="" class="platform-icon">
+              <input name="social_instagram" placeholder="username">
+            </div>
+            <div class="social-input-row">
+              <img src="/tiktok.png" alt="" class="platform-icon">
+              <input name="social_tiktok" placeholder="username">
+            </div>
+          </div>
+        </div>
+
+        <label>
+          Website <span class="optional">optional</span>
+          <input name="website" inputmode="url" placeholder="https://yoursite.com">
+        </label>
+
+        <div class="field-group">
+          <label class="group-label">More about you</label>
+          <div class="tile-grid">
+            <label class="tile">
+              <span class="tile-label">Personality / MBTI <span class="optional">optional</span></span>
+              <input name="mbti" list="mbti-types" placeholder="e.g. INFJ">
+            </label>
+            <label class="tile">
+              <span class="tile-label">Interests <span class="optional">optional</span></span>
+              <input name="interests" placeholder="e.g. photography">
+            </label>
+            <label class="tile">
+              <span class="tile-label">Favorite song <span class="optional">optional</span></span>
+              <input name="favoriteSong" placeholder="e.g. Billie Jean">
+            </label>
+            <label class="tile">
+              <span class="tile-label">Favorite movie / series <span class="optional">optional</span></span>
+              <input name="favoriteMovie" placeholder="e.g. The Matrix">
+            </label>
+          </div>
+          <datalist id="mbti-types">
+            <option value="INTJ"></option><option value="INTP"></option>
+            <option value="ENTJ"></option><option value="ENTP"></option>
+            <option value="INFJ"></option><option value="INFP"></option>
+            <option value="ENFJ"></option><option value="ENFP"></option>
+            <option value="ISTJ"></option><option value="ISFJ"></option>
+            <option value="ESTJ"></option><option value="ESFJ"></option>
+            <option value="ISTP"></option><option value="ISFP"></option>
+            <option value="ESTP"></option><option value="ESFP"></option>
+          </datalist>
+        </div>
 
         <button type="submit" class="primary">Create card</button>
         <p id="form-error" class="error" hidden></p>
@@ -67,17 +130,16 @@
           <a id="bitly-link" target="_blank" rel="noopener"></a>
           <button type="button" data-copy="bitly-link">Copy</button>
         </div>
-        <p class="hint" id="bitly-hint" hidden>
-          Tip: set <code>BITLY_ACCESS_TOKEN</code> in the server env to auto-generate a bit.ly link.
-        </p>
       </div>
     </section>
   </main>
 
   <footer class="site-footer">
-    Made with <span class="logo">cardy</span>
+    <p>&copy; 2026 cardy &middot; All rights reserved</p>
+    <p>Created by Costa</p>
   </footer>
 
+  <script src="/render-card.js"></script>
   <script>
     const form = document.getElementById('card-form');
     const preview = document.getElementById('preview');
@@ -86,43 +148,78 @@
     const shareLink = document.getElementById('share-link');
     const bitlyRow = document.getElementById('bitly-row');
     const bitlyLink = document.getElementById('bitly-link');
-    const bitlyHint = document.getElementById('bitly-hint');
 
-    function escapeHtml(str) {
-      return String(str).replace(/[&<>"']/g, (c) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-      }[c]));
+    // --- Country dropdown (all countries) ---------------------------------
+    const COUNTRIES = [
+      'Afghanistan','Albania','Algeria','Andorra','Angola','Antigua and Barbuda','Argentina','Armenia','Australia','Austria','Azerbaijan',
+      'Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium','Belize','Benin','Bhutan','Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei','Bulgaria','Burkina Faso','Burundi',
+      'Cabo Verde','Cambodia','Cameroon','Canada','Central African Republic','Chad','Chile','China','Colombia','Comoros','Congo (DRC)','Congo (Republic)','Costa Rica','Cote d’Ivoire','Croatia','Cuba','Cyprus','Czechia',
+      'Denmark','Djibouti','Dominica','Dominican Republic',
+      'Ecuador','Egypt','El Salvador','Equatorial Guinea','Eritrea','Estonia','Eswatini','Ethiopia',
+      'Fiji','Finland','France',
+      'Gabon','Gambia','Georgia','Germany','Ghana','Greece','Grenada','Guatemala','Guinea','Guinea-Bissau','Guyana',
+      'Haiti','Honduras','Hungary',
+      'Iceland','India','Indonesia','Iran','Iraq','Ireland','Israel','Italy',
+      'Jamaica','Japan','Jordan',
+      'Kazakhstan','Kenya','Kiribati','Kuwait','Kyrgyzstan',
+      'Laos','Latvia','Lebanon','Lesotho','Liberia','Libya','Liechtenstein','Lithuania','Luxembourg',
+      'Madagascar','Malawi','Malaysia','Maldives','Mali','Malta','Marshall Islands','Mauritania','Mauritius','Mexico','Micronesia','Moldova','Monaco','Mongolia','Montenegro','Morocco','Mozambique','Myanmar',
+      'Namibia','Nauru','Nepal','Netherlands','New Zealand','Nicaragua','Niger','Nigeria','North Korea','North Macedonia','Norway',
+      'Oman',
+      'Pakistan','Palau','Palestine','Panama','Papua New Guinea','Paraguay','Peru','Philippines','Poland','Portugal',
+      'Qatar',
+      'Romania','Russia','Rwanda',
+      'Saint Kitts and Nevis','Saint Lucia','Saint Vincent and the Grenadines','Samoa','San Marino','Sao Tome and Principe','Saudi Arabia','Senegal','Serbia','Seychelles','Sierra Leone','Singapore','Slovakia','Slovenia','Solomon Islands','Somalia','South Africa','South Korea','South Sudan','Spain','Sri Lanka','Sudan','Suriname','Sweden','Switzerland','Syria',
+      'Taiwan','Tajikistan','Tanzania','Thailand','Timor-Leste','Togo','Tonga','Trinidad and Tobago','Tunisia','Turkey','Turkmenistan','Tuvalu',
+      'Uganda','Ukraine','United Arab Emirates','United Kingdom','United States','Uruguay','Uzbekistan',
+      'Vanuatu','Vatican City','Venezuela','Vietnam',
+      'Yemen',
+      'Zambia','Zimbabwe'
+    ];
+    (function populateCountries() {
+      const select = document.getElementById('country');
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = 'Select your country…';
+      select.appendChild(empty);
+      for (const c of COUNTRIES) {
+        const opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = c;
+        select.appendChild(opt);
+      }
+    })();
+
+    // --- Social media platforms -------------------------------------------
+    const PLATFORMS = ['discord', 'x', 'instagram', 'tiktok'];
+
+    // --- Form data / preview ----------------------------------------------
+    function val(name) {
+      const el = form.elements[name];
+      return el ? el.value : '';
     }
 
     function currentData() {
-      const fd = new FormData(form);
+      const socials = PLATFORMS
+        .filter((p) => val('social_' + p))
+        .map((p) => ({ platform: p, handle: val('social_' + p).trim() }));
       return {
-        name: fd.get('name') || '',
-        age: fd.get('age') || '',
-        country: fd.get('country') || '',
-        role: fd.get('role') || 'job',
-        roleLabel: fd.get('roleLabel') || '',
-        notes: fd.get('notes') || '',
+        name: val('name'),
+        age: val('age'),
+        country: val('country'),
+        role: val('role') || 'job',
+        roleLabel: val('roleLabel'),
+        aboutMe: val('aboutMe'),
+        socials,
+        website: val('website'),
+        mbti: val('mbti'),
+        interests: val('interests'),
+        favoriteSong: val('favoriteSong'),
+        favoriteMovie: val('favoriteMovie'),
       };
     }
 
-    function renderCard(data, el) {
-      const emoji = data.role === 'student' ? '&#127891;' : '&#128188;';
-      const roleLine = data.roleLabel || (data.role === 'student' ? 'Student' : 'Job');
-      const meta = [
-        data.age ? '\u{1F382} ' + escapeHtml(data.age) : '',
-        data.country ? '\u{1F4CD} ' + escapeHtml(data.country) : '',
-      ].filter(Boolean).join(' &middot; ');
-
-      el.innerHTML =
-        '<div class="card-name">' + (escapeHtml(data.name) || 'Your name') + '</div>' +
-        '<div class="card-role">' + emoji + ' ' + escapeHtml(roleLine) + '</div>' +
-        (meta ? '<div class="card-meta">' + meta + '</div>' : '') +
-        (data.notes ? '<div class="card-notes">' + escapeHtml(data.notes) + '</div>' : '');
-    }
-
-    form.addEventListener('input', () => renderCard(currentData(), preview));
-    renderCard(currentData(), preview);
+    form.addEventListener('input', () => renderCardData(currentData(), preview));
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -141,7 +238,7 @@
       }
 
       const card = await res.json();
-      renderCard(card, preview);
+      renderCardData(card, preview);
 
       shareLink.href = card.shareUrl;
       shareLink.textContent = card.shareUrl;
@@ -150,10 +247,8 @@
         bitlyLink.href = card.bitlyUrl;
         bitlyLink.textContent = card.bitlyUrl;
         bitlyRow.hidden = false;
-        bitlyHint.hidden = true;
       } else {
         bitlyRow.hidden = true;
-        bitlyHint.hidden = false;
       }
 
       result.hidden = false;
@@ -172,6 +267,8 @@
         }
       });
     });
+
+    renderCardData(currentData(), preview);
   </script>
 </body>
 </html>

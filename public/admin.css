@@ -1,0 +1,266 @@
+/* Admin dashboard — loads after style.css so it can reuse the design tokens */
+
+/* --- top bar --- */
+.admin-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 22px 20px 0;
+}
+
+.admin-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--accent);
+}
+
+.admin-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 12px;
+}
+
+.btn-link:hover { text-decoration: underline; }
+
+.btn-ghost {
+  padding: 9px 14px;
+  font-size: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-ghost:hover { background: #232b40; border-color: var(--accent); }
+
+.btn-ghost.danger:hover { border-color: var(--error); color: var(--error); }
+
+.sm { padding: 6px 10px; font-size: 13px; border-radius: 8px; }
+
+/* --- main layout --- */
+.admin-main {
+  max-width: 980px;
+  margin: 24px auto 48px;
+  padding: 0 20px;
+}
+
+.admin-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.admin-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-tools input[type="search"] {
+  width: 240px;
+  margin: 0;
+}
+
+button.primary.sm {
+  width: auto;
+  padding: 9px 14px;
+}
+
+/* --- card rows --- */
+.card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  margin-top: 10px;
+}
+
+.card-row.is-owner {
+  border-color: rgba(255, 209, 102, 0.5);
+  box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.12);
+}
+
+.card-row-main { min-width: 0; }
+
+.card-row-name {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  word-break: break-word;
+}
+
+.card-row.is-owner .card-row-name { color: #ffd166; }
+
+.card-row-meta {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.card-row-socials { margin-top: 6px; }
+
+.mini-chip {
+  display: inline-block;
+  margin: 2px 4px 0 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(139, 123, 255, 0.14);
+  border: 1px solid rgba(139, 123, 255, 0.35);
+  color: var(--accent-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.card-row-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.card-row-date { font-size: 12px; color: var(--muted); }
+
+.card-row-actions { display: flex; gap: 6px; }
+
+/* reuse the gold badge from the digital card */
+.owner-badge {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 209, 102, 0.55);
+  background: rgba(255, 209, 102, 0.16);
+  color: #ffd166;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* --- modal dialog --- */
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 24px;
+  width: min(620px, calc(100vw - 32px));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+
+dialog::backdrop { background: rgba(5, 6, 10, 0.7); }
+
+dialog h2 { margin: 0 0 16px; }
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.owner-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+.owner-field input { width: auto; margin: 0; accent-color: #ffd166; }
+
+/* --- dynamic social rows in the modal --- */
+.social-edit-row {
+  display: grid;
+  grid-template-columns: 120px 1fr auto;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.social-edit-row select,
+.social-edit-row input { margin: 0; }
+
+/* --- toast --- */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  color: var(--ink);
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  z-index: 100;
+}
+
+/* --- login page --- */
+.admin-login {
+  max-width: 380px;
+  margin: 12vh auto 48px;
+  padding: 32px 28px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.admin-login .logo { margin-bottom: 18px; }
+
+@media (max-width: 560px) {
+  .admin-topbar { flex-direction: column; align-items: flex-start; }
+
+  .admin-tools { width: 100%; }
+
+  .admin-tools input[type="search"] { flex: 1; width: auto; }
+
+  .card-row { flex-direction: column; align-items: flex-start; }
+
+  .card-row-side { align-items: flex-start; width: 100%; }
+
+  .card-row-actions { flex-wrap: wrap; }
+}
