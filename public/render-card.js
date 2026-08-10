@@ -11,8 +11,6 @@ const SOCIAL_ICONS = {
   x: '<img src="/x.png" alt="" class="platform-icon">',
   instagram: '<img src="/instagram.png" alt="" class="platform-icon">',
   tiktok: '<img src="/tiktok.png" alt="" class="platform-icon">',
-  // 'spotify' kept so cards created before the switch to X still render.
-  spotify: '<img src="/spotify.png" alt="" class="platform-icon">',
 };
 
 const SOCIAL_NAMES = {
@@ -20,7 +18,6 @@ const SOCIAL_NAMES = {
   x: 'X',
   instagram: 'Instagram',
   tiktok: 'TikTok',
-  spotify: 'Spotify',
 };
 
 // Normalize a user-supplied URL to a safe http(s) href, or null.

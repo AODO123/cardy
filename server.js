@@ -16,13 +16,11 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
 const redis = Redis.fromEnv();
 const cardKey = (id) => `cardy:card:${id}`;
 
-// --- Admin auth ------------------------------------------------------------
-// The admin password comes from the ADMIN_PASSWORD env var and can be changed
-// at runtime from the dashboard (which stores a sha-256 hash in Redis; that
-// hash then wins over the env var). Sessions live in Redis so they survive
-// serverless restarts, cookies are httpOnly + sameSite=strict, login is
-// rate-limited per IP, and every state-changing request must echo a CSRF
-// token from the session.
+// Admin auth. The password is ADMIN_PASSWORD, unless it was changed from the
+// dashboard — that stores a sha-256 hash in Redis, which wins. Sessions live
+// in Redis (so they survive serverless restarts), cookies are httpOnly +
+// sameSite=strict, login is rate-limited per IP, and every state-changing
+// request must echo a per-session CSRF token.
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 const LOGIN_MAX_ATTEMPTS = 10;
 const LOGIN_LOCK_SECONDS = 15 * 60; // 15 minutes
@@ -94,13 +92,13 @@ const requireCsrf = (req, res, next) => {
   next();
 };
 
-// --- Basic security headers (defense in depth) -----------------------------
+// A couple of headers on everything: don't sniff content types, don't leak the
+// referrer. The admin pages additionally refuse to be framed (a clickjacked
+// login form could trick the admin into typing their password over a fake
+// overlay) and are never cached.
 app.use((req, res, next) => {
   if (req.path.startsWith('/admin')) {
-    // Block clickjacking of the login/dashboard (a framed login form could
-    // trick the admin into typing their password over a fake overlay).
     res.setHeader('X-Frame-Options', 'DENY');
-    // Never let the browser cache the dashboard or its API responses.
     res.setHeader('Cache-Control', 'no-store');
   }
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -108,17 +106,17 @@ app.use((req, res, next) => {
   next();
 });
 
-// The dashboard and sign-in HTML live in views/ (NOT public/) so Vercel's
-// static file server can't hand them out to everyone — they are only
-// reachable through /admin, which gates on the session. Any legacy direct
-// paths redirect through that same gate.
+// The dashboard and sign-in HTML live in views/ (not public/) so Vercel's
+// static file server can't serve them to everyone — they're only reachable
+// through /admin, which gates on the session. Legacy direct paths redirect
+// through that same gate.
 app.get(['/admin.html', '/admin-login.html'], (_req, res) => res.redirect('/admin'));
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Express 4 doesn't catch errors from async handlers — this wrapper does,
-// so a Redis hiccup returns a 500 instead of crashing the process.
+// Express 4 swallows errors thrown in async handlers; this wrapper surfaces
+// them as a 500 instead of letting the process crash.
 const asyncHandler = (fn) => (req, res) =>
   fn(req, res).catch((err) => {
     console.error('cardy error:', err);
@@ -146,8 +144,8 @@ async function saveCard(card) {
   await redis.set(cardKey(card.id), JSON.stringify(card));
 }
 
-// All stored card KEYS (full `cardy:card:<id>` form), via SCAN. Returning the
-// full keys matters: redis.mget() needs them, not the bare ids.
+// SCAN every stored card key. Keep the full `cardy:card:<id>` form — mget()
+// needs the full keys, not the bare ids.
 async function getAllCardKeys() {
   const keys = [];
   let cursor = 0;
@@ -159,7 +157,8 @@ async function getAllCardKeys() {
   return keys;
 }
 
-// --- Bitly ----------------------------------------------------------------
+// Shorten a share URL with Bitly if a token is configured. Failures are
+// caught by the caller, so a quota hiccup never breaks card creation.
 async function shortenWithBitly(longUrl) {
   const res = await fetch('https://api-ssl.bitly.com/v4/shorten', {
     method: 'POST',
@@ -184,13 +183,11 @@ function buildCardUrl(req, id) {
   return `${proto}://${req.get('host')}/card/${id}`;
 }
 
-// --- Socials ---------------------------------------------------------------
-// Platforms accepted from the form. 'spotify' is kept for backward compatibility
-// with cards created before it was replaced by 'x'.
-const KNOWN_PLATFORMS = ['discord', 'x', 'instagram', 'tiktok', 'spotify'];
+// Socials are plain usernames; anything outside this list is dropped.
+const KNOWN_PLATFORMS = ['discord', 'x', 'instagram', 'tiktok'];
 
-// Normalize incoming socials: keep only known platforms, one per platform,
-// trim handles, and drop any extra fields (like old `verified`).
+// Normalize incoming socials: known platforms only, one per platform,
+// handles trimmed, extra fields (like old `verified`) dropped.
 function sanitizeSocials(list) {
   if (!Array.isArray(list)) return [];
   const seen = new Set();
@@ -207,9 +204,8 @@ function sanitizeSocials(list) {
   return out;
 }
 
-// --- Card validation -------------------------------------------------------
-// Single source of truth for card input. Returns { value } on success or
-// { error } on failure. `includeOwner` is admin-only: the public form can
+// One place that turns raw input into a card. Returns { value } on success or
+// { error } on failure. includeOwner is admin-only — the public form can
 // never mark a card as the owner.
 function normalizeCard(body, opts = {}) {
   const {
@@ -242,13 +238,13 @@ function normalizeCard(body, opts = {}) {
     country: str(country),
     role: role === 'student' ? 'student' : 'job',
     roleLabel: str(roleLabel),
-    // Backward compatible: old cards sent `notes`, new forms send `aboutMe`.
+    // Older cards sent `notes`, new forms send `aboutMe`.
     aboutMe: str(aboutMe) || str(notes),
     socials: sanitizeSocials(socials),
     website: str(website),
     mbti: str(mbti),
     interests: str(interests),
-    // Backward compatible: old cards used `favoriteMusic`, new forms use `favoriteSong`.
+    // Older cards used `favoriteMusic`, new forms use `favoriteSong`.
     favoriteSong: str(favoriteSong) || str(favoriteMusic),
     favoriteMovie: str(favoriteMovie),
   };
@@ -256,7 +252,6 @@ function normalizeCard(body, opts = {}) {
   return { value };
 }
 
-// --- Public API ------------------------------------------------------------
 app.post('/api/cards', asyncHandler(async (req, res) => {
   const result = normalizeCard(req.body);
   if (result.error) {
@@ -294,7 +289,6 @@ app.get('/api/cards/:id', asyncHandler(async (req, res) => {
   res.json(card);
 }));
 
-// --- Admin ----------------------------------------------------------------
 app.post('/admin/login', asyncHandler(async (req, res) => {
   const ip = req.ip || 'unknown';
   const lock = loginKey(ip);
@@ -340,9 +334,7 @@ app.post('/admin/logout', requireAuth(), asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// The dashboard (or the sign-in page when there's no valid session). The
-// pages live in views/ (not public/) so they can only be served here, after
-// the session check.
+// Serve the dashboard, or the sign-in page when there's no valid session.
 app.get('/admin', asyncHandler(async (req, res) => {
   const session = await sessionFor(req);
   res.sendFile(path.join(__dirname, 'views', session ? 'admin.html' : 'admin-login.html'));
@@ -425,18 +417,18 @@ app.post('/admin/api/password', requireAuth(), requireCsrf, asyncHandler(async (
   res.json({ ok: true });
 }));
 
-// --- card view ------------------------------------------------------------
+// The shared card page — a static shell that fetches /api/cards/:id in JS.
 app.get('/card/:id', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'card.html'));
 });
 
-// Any unmatched route returns JSON instead of Express's default HTML 404.
+// Unmatched routes return JSON 404 instead of Express's HTML page.
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found.' });
 });
 
-// Final error handler — malformed JSON bodies get a clean 400, anything else
-// (including async route errors not caught above) becomes a JSON 500.
+// Last-resort error handler: malformed JSON gets a clean 400, everything
+// else (including async errors not caught above) becomes a JSON 500.
 app.use((err, req, res, next) => {
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ error: 'Invalid JSON body.' });
@@ -445,7 +437,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong.' });
 });
 
-// Listen only when run directly — Vercel imports the app instead.
+// Start the server when run directly; Vercel just imports the app.
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`cardy running at http://localhost:${PORT}`);

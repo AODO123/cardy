@@ -121,6 +121,19 @@ button.primary.sm {
   color: var(--muted);
 }
 
+.card-row-link {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.card-row-link a {
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.card-row-link a:hover { text-decoration: underline; }
+
 .card-row-socials { margin-top: 6px; }
 
 .mini-chip {

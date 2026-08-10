@@ -149,7 +149,7 @@
     const bitlyRow = document.getElementById('bitly-row');
     const bitlyLink = document.getElementById('bitly-link');
 
-    // --- Country dropdown (all countries) ---------------------------------
+    // Every country, for the dropdown.
     const COUNTRIES = [
       'Afghanistan','Albania','Algeria','Andorra','Angola','Antigua and Barbuda','Argentina','Armenia','Australia','Austria','Azerbaijan',
       'Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium','Belize','Benin','Bhutan','Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei','Bulgaria','Burkina Faso','Burundi',
@@ -190,10 +190,10 @@
       }
     })();
 
-    // --- Social media platforms -------------------------------------------
+    // The platforms we take a username for.
     const PLATFORMS = ['discord', 'x', 'instagram', 'tiktok'];
 
-    // --- Form data / preview ----------------------------------------------
+    // Read the form into the same shape the API expects.
     function val(name) {
       const el = form.elements[name];
       return el ? el.value : '';

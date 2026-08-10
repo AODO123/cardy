@@ -1,12 +1,10 @@
 // cardy test suite — run with: npm test
 //
-// Spins up the real server (server.js) on a test port against the real
-// Upstash Redis, then exercises:
-//   - POST /api/cards validation matrix (required fields, age rules, socials)
-//   - Backward compatibility (notes→aboutMe, favoriteMusic→favoriteSong, spotify)
-//   - GET /api/cards/:id + 404 handling + JSON 404s
-//   - Every page and every static asset
-//   - The shared renderer (render-card.js), including XSS escaping
+// Boots the real server against the real Upstash Redis and pokes at it:
+// card validation, backward compatibility, pages/assets, the shared
+// renderer, and the whole admin flow (login, CSRF, rate limit, CRUD,
+// password change). Tests delete every card they create, so the DB stays
+// clean afterwards.
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -54,7 +52,7 @@ async function get(url) {
   return { status: res.status, text: await res.text() };
 }
 
-// --- Renderer harness -------------------------------------------------------
+// Load render-card.js in a bare vm context so we can test it headless.
 function render(card) {
   const code = fs.readFileSync(path.join(__dirname, 'public', 'render-card.js'), 'utf8');
   // URL is not a global inside a fresh vm context, but the browser has it —
@@ -69,9 +67,8 @@ function render(card) {
 
 const XSS = '<script>alert(1)</script>';
 
-// ---------------------------------------------------------------------------
 async function main() {
-  // 0. Boot the server
+  // Boot the server.
   const server = spawn(process.execPath, ['server.js'], {
     cwd: __dirname,
     env: { ...process.env, PORT: String(PORT), ADMIN_PASSWORD: 'testpass-123' },
@@ -99,7 +96,7 @@ async function main() {
   }
   console.log('Server up. Running tests…\n');
 
-  // ============================ POST /api/cards ============================
+  // ---- POST /api/cards ----
   console.log('── POST /api/cards: validation');
 
   let r = await post('/api/cards', { name: 'jane doe', age: 28, country: 'Canada',
@@ -153,8 +150,8 @@ async function main() {
     ]), JSON.stringify(r.json && r.json.socials));
 
   r = await post('/api/cards', { name: 'soc2', age: 20, socials: [{ platform: 'spotify', handle: 'legacy' }] });
-  check('socials: legacy spotify still accepted', r.status === 201 &&
-    r.json.socials[0].platform === 'spotify', JSON.stringify(r.json && r.json.socials));
+  check('socials: spotify dropped', r.status === 201 && Array.isArray(r.json.socials) && r.json.socials.length === 0,
+    JSON.stringify(r.json && r.json.socials));
 
   r = await post('/api/cards', { name: 'soc3', age: 20, socials: 'nope' });
   check('socials: non-array → []', r.status === 201 && Array.isArray(r.json.socials) && r.json.socials.length === 0);
@@ -186,7 +183,7 @@ async function main() {
   r = await post('/api/cards', { name: 'bc7', age: 20, website: 'javascript:alert(1)' });
   check('website stored raw (renderer neutralizes)', r.json.website === 'javascript:alert(1)');
 
-  // ============================ GET /api/cards =============================
+  // ---- GET /api/cards ----
   console.log('── GET /api/cards/:id');
 
   if (okCardId) {
@@ -198,7 +195,7 @@ async function main() {
   r = await get('/api/does-not-exist');
   check('unknown API route → 404 JSON Not found', r.status === 404 && r.text.includes('Not found.'));
 
-  // ============================ pages & assets =============================
+  // ---- pages & assets ----
   console.log('── Pages & assets');
 
   r = await get('/');
@@ -216,12 +213,12 @@ async function main() {
   check('card page: has "Create your own card" → /', r.text.includes('Create your own card') && r.text.includes('href="/"'));
 
   for (const asset of ['style.css', 'render-card.js', 'cardy.png', 'discord.png', 'x.png',
-    'instagram.png', 'tiktok.png', 'spotify.png']) {
+    'instagram.png', 'tiktok.png']) {
     r = await get('/' + asset);
     check(`asset ${asset} → 200`, r.status === 200, `got ${r.status}`);
   }
 
-  // ============================ renderer ===================================
+  // ---- renderer ----
   console.log('── render-card.js');
 
   let html = render({ name: 'jane doe', role: 'job', roleLabel: 'Engineer', age: 28, country: 'Canada',
@@ -245,8 +242,8 @@ async function main() {
   html = render({ name: 'legacy', favoriteMusic: 'Thriller' });
   check('legacy favoriteMusic → "Favorite song"', html.includes('Favorite song') && html.includes('Thriller'));
 
-  html = render({ name: 'legacy', socials: [{ platform: 'spotify', handle: 'olduser', verified: true }] });
-  check('legacy spotify renders with icon', html.includes('/spotify.png') && html.includes('olduser'));
+  html = render({ name: 'legacy', socials: [{ platform: 'spotify', handle: 'olduser' }] });
+  check('unknown platform (spotify) renders without an icon', !html.includes('/spotify.png') && html.includes('olduser'));
   check('no verified badge anywhere', !html.includes('badge') && !html.includes('Verified'));
 
   html = render({});
@@ -255,7 +252,7 @@ async function main() {
   html = render({ name: 'x', socials: [] });
   check('empty socials → no Social section', !html.includes('Social'));
 
-  // ============================ admin dashboard ==========================
+  // ---- admin dashboard ----
   console.log('── Admin dashboard');
 
   const ADMIN_PASS = 'testpass-123';
@@ -453,7 +450,7 @@ async function main() {
     else await adminRedis.del('cardy:admin:passhash');
   }
 
-  // --- Cleanup: delete every card this run created (never touch the owner) ---
+  // Cleanup: delete every card this run created (never touch the owner).
   const ids = [...createdCardIds];
   for (let i = 0; i < ids.length; i += 100) {
     await adminRedis.del(...ids.slice(i, i + 100).map((id) => 'cardy:card:' + id));

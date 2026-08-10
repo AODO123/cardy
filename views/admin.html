@@ -96,9 +96,9 @@
   <div id="toast" class="toast" hidden></div>
 
   <script>
-    const PLATFORMS = ['discord', 'x', 'instagram', 'tiktok', 'spotify'];
+    const PLATFORMS = ['discord', 'x', 'instagram', 'tiktok'];
 
-    // --- tiny helpers ------------------------------------------------------
+    // A couple of small helpers.
     const $ = (sel) => document.querySelector(sel);
     function escapeHtml(str) {
       return String(str).replace(/[&<>"']/g, (c) => ({
@@ -113,7 +113,7 @@
       t._timer = setTimeout(() => (t.hidden = true), 3500);
     }
 
-    // --- state ---------------------------------------------------------------
+    // Session CSRF token + the card list we hold in memory.
     let csrf = null;
     let cards = [];
 
@@ -130,7 +130,7 @@
       return { status: res.status, data };
     }
 
-    // --- loading + rendering --------------------------------------------------
+    // Fetch the cards, then render the list.
     async function loadCards() {
       const { data } = await api('/admin/api/cards');
       cards = Array.isArray(data) ? data : [];
@@ -158,11 +158,17 @@
           .map((s) => '<span class="mini-chip">' + escapeHtml(s.platform) + '</span>')
           .join(' ');
         const created = c.createdAt ? new Date(c.createdAt).toLocaleDateString() : '';
+        const cardLink = c.shareUrl || (location.origin + '/card/' + c.id);
+        const linkRow = '<div class="card-row-link">' +
+          '<a href="' + escapeHtml(cardLink) + '" target="_blank" rel="noopener">/card/' + escapeHtml(c.id) + '</a>' +
+          (c.bitlyUrl ? ' &middot; <a href="' + escapeHtml(c.bitlyUrl) + '" target="_blank" rel="noopener">bit.ly</a>' : '') +
+          '</div>';
         return '<div class="card-row' + (c.owner ? ' is-owner' : '') + '">' +
           '<div class="card-row-main">' +
             '<div class="card-row-name">' + escapeHtml(c.name || '(no name)') +
               (c.owner ? ' <span class="owner-badge">Owner</span>' : '') + '</div>' +
             (meta ? '<div class="card-row-meta">' + meta + '</div>' : '') +
+            linkRow +
             (socials ? '<div class="card-row-socials">' + socials + '</div>' : '') +
           '</div>' +
           '<div class="card-row-side">' +
@@ -202,7 +208,7 @@
 
     $('#search').addEventListener('input', render);
 
-    // --- create / edit -------------------------------------------------------
+    // Create / edit modal.
     function socialRow(platform, handle) {
       const row = document.createElement('div');
       row.className = 'social-edit-row';
@@ -297,7 +303,7 @@
       }
     }
 
-    // --- password + logout ----------------------------------------------------
+    // Password change and logout.
     $('#open-password').addEventListener('click', () => {
       $('#pw-form').reset();
       $('#pw-error').hidden = true;
@@ -336,7 +342,7 @@
 
     $('#new-card').addEventListener('click', () => openCardModal(null));
 
-    // --- init -----------------------------------------------------------------
+    // On load: grab the CSRF token, then pull the cards.
     (async () => {
       const { data } = await api('/admin/api/me', {});
       csrf = data.csrf;
