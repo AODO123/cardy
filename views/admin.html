@@ -47,12 +47,20 @@
         </div>
         <div class="row">
           <label>Country <span class="optional">optional</span><input name="country" placeholder="Canada"></label>
-          <label>Job title / field of study <span class="optional">optional</span><input name="roleLabel" placeholder="Software Engineer"></label>
+          <label>Title or focus <span class="optional">optional</span><input name="roleLabel" placeholder="e.g. Software Engineer, barista, Computer Science"></label>
         </div>
         <fieldset class="role">
-          <legend>I am a&hellip;</legend>
-          <label class="radio"><input type="radio" name="role" value="job"> &#128188; Job</label>
-          <label class="radio"><input type="radio" name="role" value="student"> &#127891; Student</label>
+          <legend>What do you do?</legend>
+          <div class="role-options">
+            <label class="role-opt">
+              <input type="radio" name="role" value="job">
+              <span>💼 I work</span>
+            </label>
+            <label class="role-opt">
+              <input type="radio" name="role" value="student">
+              <span>🎓 I study</span>
+            </label>
+          </div>
         </fieldset>
         <label>About me <span class="optional">optional</span><textarea name="aboutMe" rows="3" placeholder="Tell people a bit about yourself&hellip;"></textarea></label>
         <div class="field-group">
