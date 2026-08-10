@@ -132,6 +132,8 @@ input, textarea, select {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
+input[hidden], img[hidden] { display: none; }
+
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: 0.75; }
 
 input:focus, textarea:focus, select:focus {
