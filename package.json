@@ -19,8 +19,8 @@
     "vercel",
     "serverless"
   ],
-  "author": "Adham Mohamed Ahmed Nour Eldin",
-  "license": "UNLICENSED",
+  "author": "Costa",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AODO123/cardy.git"
