@@ -1,7 +1,7 @@
 {
   "name": "cardy",
   "version": "1.0.0",
-  "description": "Cardy — create and share a tiny digital card about yourself.",
+  "description": "A tiny digital card about yourself, shared with one link.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,6 +9,25 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "keywords": [
+    "digital-card",
+    "business-card",
+    "express",
+    "redis",
+    "upstash",
+    "vercel",
+    "serverless"
+  ],
+  "author": "Adham Mohamed Ahmed Nour Eldin",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AODO123/cardy.git"
+  },
+  "homepage": "https://cardy-ten.vercel.app",
+  "bugs": {
+    "url": "https://github.com/AODO123/cardy/issues"
   },
   "dependencies": {
     "@upstash/redis": "^1.38.2",

@@ -1,4 +1,16 @@
+# --- Node ---
 node_modules/
+npm-debug.log*
+
+# --- Environment & secrets ---
 .env
+.env.local
+.env.production
+.env.development
 data/
+
+# --- Deployment ---
 .vercel
+
+# --- macOS ---
+.DS_Store

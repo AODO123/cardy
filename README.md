@@ -1,120 +1,58 @@
 # cardy
 
-Create a tiny digital card about yourself and share it with one link. Add your social usernames (Discord, X, Instagram, TikTok), pick a song, drop your MBTI — anyone who opens your card sees a clean summary of who you are. Cards are stored in **Upstash Redis**, so they survive restarts and run on serverless hosting (Vercel).
+A tiny digital card about yourself, created once and shared with one link.
 
-## Local development
+No account, no app, no setup on the visitor's side. You fill in a short form — name, age, a couple of socials, a favorite song if you feel like it — and cardy gives you a page at a short URL like `/card/a1b2c3`. Send that link to anyone; they see a clean summary of who you are. If they like it, there's a button right there to make their own card.
+
+Live at **[cardy-ten.vercel.app](https://cardy-ten.vercel.app)**.
+
+## What's on a card
+
+- **Name and age** (both required) plus an optional country
+- **Job or student**, with a title or field of study
+- **About me**, website, MBTI, interests, favorite song, favorite movie
+- **Socials as plain usernames** — Discord, X, Instagram, TikTok. No OAuth dance, no verification; you just type your handle
+- A shareable link to the page, and a bit.ly short link when Bitly is configured
+
+One card can be flagged as the **owner** card from the admin dashboard — it gets a gold name and a small badge. That's it, kept deliberately simple.
+
+## Run it locally
+
+You need Node.js 18+ and a free [Upstash Redis](https://console.upstash.com) database (the REST URL and token are all that matter).
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Create a free Upstash Redis database
-#    - Go to https://console.upstash.com → create a database (free tier is fine)
-#    - Copy the REST URL and REST Token
-cp .env.example .env
-# edit .env: set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN
-
-# 3. Run it
+cp .env.example .env    # then fill in UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
 npm start
 ```
 
-Open http://localhost:3000, fill in the form, hit **Create card**, and you get:
-- the card's own URL, e.g. `http://localhost:3000/card/a1b2c3`
-- a bit.ly link automatically (when `BITLY_ACCESS_TOKEN` is set)
+Open http://localhost:3000, submit the form, and you get the card's URL back.
 
-> **Note:** bit.ly only shortens *publicly reachable* URLs. For local testing, run a tunnel like `ngrok http 3000` and set `PUBLIC_BASE_URL` to its URL.
+A note on bit.ly: it only shortens URLs it can actually reach. For local testing, run a tunnel (`ngrok http 3000`) and set `PUBLIC_BASE_URL` to the tunnel's address.
 
-## Card fields
+## How it works
 
-Name (required), age (required, 1–130), job/student role, job title or field of study, country, **About me**, social usernames (Discord / X / Instagram / TikTok), website link, personality / MBTI, interests, favorite song, and favorite movie or series. Optional fields can be left blank.
+Cards are stored in Upstash Redis as `cardy:card:<id>` JSON blobs. The server keeps no state of its own, which is what lets it run as a single serverless function on Vercel.
 
-## Social media
+- `POST /api/cards` validates and saves a card, then returns its `shareUrl`
+- `GET /card/:id` serves the card page, which loads its data from `GET /api/cards/:id`
+- Bitly shortening happens server-side, so your token never reaches the browser. If it fails — quota's the usual culprit — the card still works, you just get the full link
 
-No OAuth, no verification — you simply type each platform's username. The form offers **Discord, X, Instagram, and TikTok**. Cards created before the switch to X may still carry a **Spotify** handle, and those render as before.
-
-## Deploying to Vercel (free)
-
-The app is already wired for Vercel: `api/index.js` exports the Express app and `vercel.json` rewrites all traffic to it.
-
-```bash
-# 1. Install the Vercel CLI and log in once
-npm install -g vercel
-vercel login          # opens your browser
-
-# 2. Add the environment variables (matches your .env)
-vercel env add UPSTASH_REDIS_REST_URL
-vercel env add UPSTASH_REDIS_REST_TOKEN
-vercel env add BITLY_ACCESS_TOKEN
-vercel env add PUBLIC_BASE_URL      # set to your https://<project>.vercel.app URL after first deploy
-
-# 3. Deploy
-vercel --prod
-```
-
-Or skip the CLI and import the repo through the [Vercel dashboard](https://vercel.com/new) — set the same env vars under **Settings → Environment Variables**.
-
-## Environment variables
-
-| Variable                  | Purpose                                                                      |
-| ------------------------- | ---------------------------------------------------------------------------- |
-| `UPSTASH_REDIS_REST_URL`   | Upstash Redis REST URL (required).                                          |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token (required).                                        |
-| `BITLY_ACCESS_TOKEN`      | Bitly access token. Without it, cards still work — you just get the full link. |
-| `PUBLIC_BASE_URL`         | Public base URL of the site, e.g. `https://cardy.vercel.app`. If unset, card links are built from the incoming request. |
-| `ADMIN_PASSWORD`          | Password for the `/admin` dashboard (see below). If unset, the dashboard reports it isn't configured. |
-| `PORT`                    | Port for local development (default `3000`). Vercel ignores this.           |
-
-## API
-
-### `POST /api/cards` — create a card
-
-Body (JSON):
-
-```json
-{
-  "name": "john doe",              // required
-  "age": 28,                       // required, whole number 1–130
-  "country": "Canada",             // optional
-  "role": "job" | "student",       // optional, default "job"
-  "roleLabel": "Engineer",         // optional
-  "aboutMe": "…",                  // optional ("notes" is accepted for older cards)
-  "socials": [                     // optional
-    { "platform": "discord", "handle": "user" },
-    { "platform": "x", "handle": "@user" }
-  ],
-  "website": "https://example.com",// optional
-  "mbti": "INFJ",                  // optional
-  "interests": "photography",      // optional
-  "favoriteSong": "Billie Jean",   // optional ("favoriteMusic" accepted for older cards)
-  "favoriteMovie": "The Matrix"    // optional
-}
-```
-
-Returns `201` with the stored card, including `shareUrl` and (when Bitly is configured and has quota) `bitlyUrl`. Known platforms are deduplicated, handles are trimmed to 120 characters, and unknown platforms are dropped.
-
-### `GET /api/cards/:id` — fetch a card
-
-Returns the card, or `404 { "error": "Card not found." }`.
+Cards are rendered by escaping everything user-supplied and only ever linking http/https URLs, so a card can't smuggle in scripts or `javascript:` links.
 
 ## Admin dashboard
 
-Visit `/admin` to manage the site. It's protected by a single password set with `ADMIN_PASSWORD`, and it follows security best practices:
+`/admin` is a password-protected panel where the site owner can list, search, create, edit, and delete every card, and mark one as the owner. The password comes from `ADMIN_PASSWORD`, and it can be changed later from the dashboard itself (the new hash is stored in Redis and takes over from the env var).
 
-- sessions live in **Upstash Redis** (so they survive serverless restarts) and are sent as `httpOnly`, `SameSite=Strict` cookies
-- every state-changing request must echo a per-session **CSRF token**
-- login is **rate-limited per IP** (10 failed attempts → locked for 15 minutes) and the password hash is compared in constant time
-- the password can be **changed from the dashboard** — the new sha-256 hash is stored in Redis and then wins over the env var
-- the public card form can **never** set the owner flag
-- the dashboard shell is only served to a live session: hitting `/admin.html` without one is redirected through the login gate (and every admin API route returns `401`)
-- admin pages are sent with `X-Frame-Options: DENY` (no clickjacking of the login form) and `Cache-Control: no-store`; all responses get `X-Content-Type-Options: nosniff`
+On top of the password:
 
-From the dashboard you can **list, search, create, edit, and delete** every card, and mark any card as the **owner** card. Owner cards get a gold name and a small "Owner" badge when rendered (this is how Costa's card is flagged).
+- sessions live in Redis and travel as `httpOnly`, `SameSite=Strict` cookies
+- every mutation has to echo a per-session CSRF token
+- login is rate-limited per IP — 10 failed attempts locks you out for 15 minutes — and password checks run in constant time
+- the dashboard HTML isn't in `public/`, so it can't be served statically without a session; admin responses are also `X-Frame-Options: DENY` and `Cache-Control: no-store` to stop clickjacking and caching
+- the public card form can never set the owner flag. That's admin-only
 
-Set the password on Vercel with `vercel env add ADMIN_PASSWORD`.
-
-### Admin API
-
-All routes require the admin session cookie; every mutation also requires an `X-CSRF-Token` header (fetch it from `/admin/api/me`).
+The admin API — for scripted use or building on top of it:
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -124,17 +62,70 @@ All routes require the admin session cookie; every mutation also requires an `X-
 | `GET` | `/admin/api/cards` | list all cards (newest first) |
 | `GET` | `/admin/api/cards/:id` | one card |
 | `POST` | `/admin/api/cards` | create a card (may set `owner`) |
-| `PATCH` | `/admin/api/cards/:id` | edit a card (full body, may set `owner`) |
+| `PATCH` | `/admin/api/cards/:id` | edit a card (may set `owner`) |
 | `DELETE` | `/admin/api/cards/:id` | delete a card |
 | `POST` | `/admin/api/password` | change the admin password (needs `currentPassword`) |
 
-## How it works
+Every route needs the admin session cookie, and every mutation also needs an `X-CSRF-Token` header (fetch it from `/admin/api/me`).
 
-- **Backend:** a small Express app. Cards are stored in Upstash Redis as `cardy:card:<id>` keys (JSON), so storage is stateless and serverless-friendly.
-- **Create:** `POST /api/cards` — saves the card and returns `shareUrl` (and `bitlyUrl` when configured).
-- **View:** `GET /card/:id` serves the card page, which loads its data from `GET /api/cards/:id`. The card page links back to the form so visitors can make their own card.
-- **Bitly:** the server calls Bitly's `/v4/shorten` API, so your token never ends up in the browser. If Bitly fails (e.g. quota), the card still works — it just keeps the full link.
-- **Security:** user content is HTML-escaped at render time and website URLs are restricted to `http`/`https`, so malicious input can't inject markup or `javascript:` links. The `/admin` dashboard is password-protected with Redis-backed sessions, CSRF tokens, and per-IP login rate limiting (see above).
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `UPSTASH_REDIS_REST_URL` | Required. Upstash Redis REST URL. |
+| `UPSTASH_REDIS_REST_TOKEN` | Required. Upstash Redis REST token. |
+| `ADMIN_PASSWORD` | Required for the dashboard. Password for `/admin`. |
+| `BITLY_ACCESS_TOKEN` | Optional. Enables bit.ly short links. |
+| `PUBLIC_BASE_URL` | Optional. Public base URL used to build card links. Unset → links are built from the incoming request. |
+| `PORT` | Local dev port (default 3000). Ignored on Vercel. |
+
+## Deploy to Vercel
+
+The repo is already wired up: `api/index.js` exports the Express app and `vercel.json` routes every path through it.
+
+```bash
+vercel login
+vercel env add UPSTASH_REDIS_REST_URL
+vercel env add UPSTASH_REDIS_REST_TOKEN
+vercel env add ADMIN_PASSWORD
+vercel env add BITLY_ACCESS_TOKEN     # optional
+vercel env add PUBLIC_BASE_URL        # your https://<project>.vercel.app URL
+vercel --prod
+```
+
+Or skip the CLI and import the repo through the [Vercel dashboard](https://vercel.com/new), setting the same variables under **Settings → Environment Variables**.
+
+## API
+
+### `POST /api/cards` — create a card
+
+JSON body:
+
+```json
+{
+  "name": "john doe",
+  "age": 28,
+  "country": "Canada",
+  "role": "job",
+  "roleLabel": "Engineer",
+  "aboutMe": "…",
+  "socials": [
+    { "platform": "discord", "handle": "user" },
+    { "platform": "x", "handle": "@user" }
+  ],
+  "website": "https://example.com",
+  "mbti": "INFJ",
+  "interests": "photography",
+  "favoriteSong": "Billie Jean",
+  "favoriteMovie": "The Matrix"
+}
+```
+
+`name` and `age` (a whole number, 1–130) are required; everything else is optional. Known platforms are deduped, handles are trimmed to 120 characters, and unknown ones are dropped. Returns `201` with the stored card, including `shareUrl` and — when Bitly is configured and has quota — `bitlyUrl`.
+
+### `GET /api/cards/:id`
+
+Returns the card, or `404 { "error": "Card not found." }`.
 
 ## Tests
 
@@ -142,23 +133,15 @@ All routes require the admin session cookie; every mutation also requires an `X-
 npm test
 ```
 
-Runs an automated suite that exercises the API validation rules, backward compatibility, the card renderer (including XSS escaping), and every page/asset.
+The suite boots a real server against your Redis and runs a bit over a hundred checks: API validation, backward compatibility (old cards used `notes` and `favoriteMusic` — both still read), the renderer including XSS escaping, every page and asset, and the whole admin flow (auth, CSRF, rate limiting, owner flag). It creates its own cards and deletes them at the end, so it won't leave junk in your database.
 
 ## Project layout
 
 ```
-cardy/
-├── server.js            # Express app + Redis storage + Bitly + API + admin auth
-├── api/index.js         # Vercel serverless entry point (exports the app)
-├── vercel.json          # rewrites all traffic to the serverless function
-├── test.js              # automated test suite (npm test)
-├── views/               # session-gated HTML (NOT in public/, so Vercel can't serve it statically)
-│   ├── admin.html       #   admin dashboard (list / edit / delete / owner / password)
-│   └── admin-login.html #   password gate for the dashboard
-├── public/
-│   ├── index.html       # create form + live preview + share links
-│   ├── card.html        # the shared card view (+ "create your own card" link)
-│   ├── render-card.js   # shared card renderer (preview + view, owner badge)
-│   ├── style.css        # shared styling (dark theme)
-│   └── admin.css        # dashboard styling
-└── .env.example
+server.js          Express app — Redis, Bitly, API, admin auth
+api/index.js       Vercel serverless entry point
+views/             Session-gated pages: admin dashboard + login
+public/            Static site: form, card view, styles, icons
+test.js            The test suite
+.env.example       Env var template
+```
