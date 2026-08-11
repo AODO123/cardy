@@ -130,7 +130,7 @@ Returns the card, or `404 { "error": "Card not found." }`.
 npm test
 ```
 
-The suite boots a real server against your Redis and runs close to two hundred checks: API validation, backward compatibility (old cards used `notes` and `favoriteMusic` — both still read), the renderer including XSS escaping, every page and asset, and the whole admin flow (auth, CSRF, rate limiting, owner flag, password migration), plus the security hardening (CSP headers, Host-header rejection, OG rate limiting). It creates its own cards and deletes them at the end, so it won't leave junk in your database.
+The suite boots a real server against your Redis and runs 245 checks: API validation, backward compatibility (old cards used `notes` and `favoriteMusic` — both still read), the renderer and photo resizer including XSS escaping, every page and asset, the OG image generator, and the whole admin flow (auth, CSRF, rate limiting, owner flag, password migration), plus the security hardening (CSP headers, Host-header rejection, OG rate limiting). It creates its own cards and deletes them at the end, so it won't leave junk in your database.
 
 ## Project layout
 
@@ -138,7 +138,7 @@ The suite boots a real server against your Redis and runs close to two hundred c
 server.js          Express app — Redis, API, admin auth
 api/index.js       Vercel serverless entry point
 views/             Session-gated pages: admin dashboard + login
-public/            Static site: form, card view, styles, icons
+public/            Static site: form, card view, shared JS, styles, icons
 test.js            The test suite
 .env.example       Env var template
 ```

@@ -395,6 +395,9 @@ app.post('/api/cards', asyncHandler(async (req, res) => {
       return res.status(403).json({ error: 'You can only edit your own card.' });
     }
     const card = { ...existing, ...result.value };
+    // An explicit empty photo means "remove it"; a missing one leaves it alone
+    // (same rule as the admin PATCH).
+    if (req.body && (req.body.photo === null || req.body.photo === '')) delete card.photo;
     await saveCard(card);
     return res.json(toPublicCard(card));
   }
@@ -637,6 +640,8 @@ app.post('/admin/api/password', requireAuth(), requireCsrf, asyncHandler(async (
 // WhatsApp, Telegram) fetch the HTML without running JS, so the per-card
 // title and Open Graph tags have to be baked into the response itself.
 function cardHeadTags(card, shareUrl) {
+  // Escape a value for use inside a double-quoted HTML attribute.
+  const escapeAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const name = String(card.name || 'cardy');
   const roleLine = card.roleLabel || (card.role === 'student' ? 'Student' : 'your tiny digital card');
   const meta = [card.age, card.country].filter(Boolean).join(' · ');
@@ -645,7 +650,6 @@ function cardHeadTags(card, shareUrl) {
     meta ? `${meta}.` : '',
     card.aboutMe ? card.aboutMe : '',
   ].filter(Boolean).join(' ');
-const escapeAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   return (
     `<title>${escapeAttr(name)} — cardy</title>\n` +

@@ -186,6 +186,11 @@ async function main() {
   r = await post('/api/cards', { name: 'x', age: '25' });
   check('age as numeric string → 201', r.status === 201 && r.json.age === 25, `got ${r.status}`);
 
+  r = await post('/api/cards', { name: 'x', age: 1 });
+  check('age 1 (lower bound) → 201', r.status === 201 && r.json.age === 1, `got ${r.status}`);
+  r = await post('/api/cards', { name: 'x', age: 130 });
+  check('age 130 (upper bound) → 201', r.status === 201 && r.json.age === 130, `got ${r.status}`);
+
   r = await post('/api/cards', {});
   check('empty body → 400', r.status === 400);
 
@@ -231,6 +236,12 @@ async function main() {
 
   r = await post('/api/cards', { name: 'x', age: 20, mbti: 'INFJ'.repeat(4), website: 'https://' + 'c'.repeat(300) });
   check('length: mbti → 10, website → 200', r.status === 201 && r.json.mbti.length === 10 && r.json.website.length === 200);
+
+  r = await post('/api/cards', { name: 'x', age: 20,
+    country: 'c'.repeat(150), roleLabel: 'r'.repeat(150), favoriteSong: 's'.repeat(250), favoriteMovie: 'm'.repeat(250) });
+  check('length: country/roleLabel → 100, favorites → 200', r.status === 201 &&
+    r.json.country.length === 100 && r.json.roleLabel.length === 100 &&
+    r.json.favoriteSong.length === 200 && r.json.favoriteMovie.length === 200, JSON.stringify(r.json));
 
   console.log('── POST /api/cards: backward compatibility');
 
@@ -299,6 +310,15 @@ async function main() {
   r = await get('/');
   check('security: CSP header present', (r.headers.get('content-security-policy') || '').includes("default-src 'self'"));
   check('security: no X-Powered-By header', !r.headers.has('x-powered-by'));
+  check('security: nosniff header', r.headers.get('x-content-type-options') === 'nosniff');
+  check('security: referrer-policy same-origin', r.headers.get('referrer-policy') === 'same-origin');
+
+  // Admin pages refuse framing and caching — that protects the login form
+  // from clickjacking and stops stale dashboard copies from being served.
+  r = await get('/admin');
+  check('admin page: X-Frame-Options DENY when logged out', r.headers.get('x-frame-options') === 'DENY');
+  check('admin page: Cache-Control no-store when logged out', (r.headers.get('cache-control') || '').includes('no-store'));
+  check('admin page: CSP header present', (r.headers.get('content-security-policy') || '').includes("default-src 'self'"));
 
   // ---- OG meta tags & image ----
   console.log('── OG meta tags & image');
@@ -341,6 +361,8 @@ async function main() {
     pngBytes[0] === 0x89 && pngBytes[1] === 0x50 && pngBytes[2] === 0x4e && pngBytes[3] === 0x47 &&
     pngBytes[4] === 0x0d && pngBytes[5] === 0x0a && pngBytes[6] === 0x1a && pngBytes[7] === 0x0a,
     `got ${pngBytes.toString('hex')}`);
+  check('/og/:id.png: long-lived cache header', (r.headers.get('cache-control') || '').includes('immutable'),
+    r.headers.get('cache-control') || '(none)');
 
   // Unknown card → serves brand image without crashing
   r = await get('/og/000000.png');
@@ -460,6 +482,26 @@ async function main() {
   r = await get('/api/cards/' + limitCardId);
   check('edit: photo visible via public GET', r.status === 200 && r.text.includes('data:image/png;base64,'));
   check('public GET: no fingerprint leaked', r.status === 200 && !r.text.includes('fingerprint'));
+
+  // The edit flow can remove the photo too — an explicit null or empty string
+  // both mean "no photo", and the change shows up on the public API.
+  r = await postWithCookie('/api/cards',
+    { name: 'limit user', age: 30, country: 'Egypt', aboutMe: 'edited!', photo: TINY_PNG, _editId: limitCardId },
+    'cardy_fp=' + fp);
+  check('edit: photo re-attached', r.status === 200 && r.json.photo === TINY_PNG, `got ${r.status}`);
+  r = await postWithCookie('/api/cards',
+    { name: 'limit user', age: 30, country: 'Egypt', aboutMe: 'edited!', photo: null, _editId: limitCardId },
+    'cardy_fp=' + fp);
+  check('edit: photo removed via photo:null', r.status === 200 && !r.json.photo, `got ${r.status}`);
+  r = await get('/api/cards/' + limitCardId);
+  check('edit: removed photo gone from public GET', r.status === 200 && !r.text.includes('data:image/png;base64,'));
+  r = await postWithCookie('/api/cards',
+    { name: 'limit user', age: 30, country: 'Egypt', aboutMe: 'edited!', photo: TINY_PNG, _editId: limitCardId },
+    'cardy_fp=' + fp);
+  r = await postWithCookie('/api/cards',
+    { name: 'limit user', age: 30, country: 'Egypt', aboutMe: 'edited!', photo: '', _editId: limitCardId },
+    'cardy_fp=' + fp);
+  check('edit: photo removed via photo:""', r.status === 200 && !r.json.photo, `got ${r.status}`);
 
   // A stranger's browser (no cookie) cannot edit this card.
   r = await postWithCookie('/api/cards', { name: 'hacker', age: 99, _editId: limitCardId });
@@ -686,7 +728,7 @@ async function main() {
       const text = await res.text();
       let json = null;
       try { json = JSON.parse(text); } catch { /* not JSON */ }
-      return { status: res.status, json, text };
+      return { status: res.status, json, text, headers: res.headers };
     }
 
     r = await get('/admin');
@@ -703,6 +745,8 @@ async function main() {
     check('admin: /admin serves the dashboard when logged in', r.status === 200 && r.text.includes('cards-list'));
     check('admin: edit modal has photo dropzone + shared photo.js',
       r.text.includes('admin-photo-drop') && r.text.includes('src="/photo.js"'), 'photo markup missing');
+    check('admin: dashboard X-Frame-Options DENY', r.headers.get('x-frame-options') === 'DENY');
+    check('admin: dashboard Cache-Control no-store', (r.headers.get('cache-control') || '').includes('no-store'));
 
     r = await adminReq(null, 'GET', '/admin/api/cards');
     check('admin: unauthenticated list → 401', r.status === 401);
@@ -759,6 +803,9 @@ async function main() {
     check('admin: list strips fingerprint', !r.text.includes('fingerprint'));
     r = await adminReq(login.token, 'GET', '/admin/api/cards/' + adminCardId);
     check('admin: detail strips fingerprint', !r.text.includes('fingerprint'));
+
+    r = await adminReq(login.token, 'GET', '/admin/api/cards/000000');
+    check('admin: detail missing card → 404', r.status === 404, `got ${r.status}`);
 
     r = await adminReq(login.token, 'GET', '/admin/api/cards');
     check('admin: created card appears in list', r.status === 200 && Array.isArray(r.json) &&
@@ -938,6 +985,39 @@ async function main() {
     // Restore the real admin password hash (deleting the key → env fallback).
     if (prevPassHash) await adminRedis.set('cardy:admin:passhash', prevPassHash);
     else await adminRedis.del('cardy:admin:passhash');
+  }
+
+  // ---- og-image.js: the SVG that becomes each card's link preview ----
+  console.log('── og-image.js');
+
+  const { cardSvg } = require('./og-image');
+  {
+    const svg = cardSvg(null);
+    check('og svg: brand fallback renders', svg.includes('<svg') && svg.includes('your tiny digital card'));
+  }
+  {
+    const svg = cardSvg({ name: 'a<b&c', age: 20, role: 'job' });
+    check('og svg: name XML-escaped', svg.includes('a&lt;b&amp;c') && !svg.includes('a<b'));
+  }
+  {
+    const svg = cardSvg({ name: 'Student Card', age: 20, role: 'student', roleLabel: 'CS', aboutMe: 'hi' });
+    check('og svg: minimal layout (no photo)', svg.includes('text-anchor="middle"') && svg.includes('CS'));
+    check('og svg: no pfp clip without photo', !svg.includes('clipPath'));
+  }
+  {
+    const svg = cardSvg({ name: 'With Photo', age: 20, role: 'job', roleLabel: 'Dev', aboutMe: 'hello',
+      photo: TINY_PNG, socials: [{ platform: 'x', handle: '@spaceman' }] });
+    check('og svg: photo layout has pfp clip', svg.includes('clipPath id="pfp"'));
+    check('og svg: photo embedded as data uri', svg.includes(TINY_PNG.slice(0, 30)));
+    check('og svg: social pill rendered', svg.includes('@spaceman'));
+  }
+  {
+    // A long owner name must not shove the Owner badge past the card's right
+    // edge (inner right edge is x=940).
+    const svg = cardSvg({ name: 'Very Long Owner Name Here', age: 30, role: 'job', owner: true, photo: TINY_PNG });
+    const m = svg.match(/<rect x="(\d+)" y="222" width="86"/);
+    const badgeX = m ? Number(m[1]) : 9999;
+    check('og svg: owner badge fits inside card (x+86 ≤ 940)', badgeX + 86 <= 940, `badge at ${badgeX}`);
   }
 
   // ---- Host header hardening + OG rate limiting (server2, no PUBLIC_BASE_URL) ----

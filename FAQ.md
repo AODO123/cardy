@@ -74,7 +74,12 @@ Required fields: `name`, `age`. Everything else is optional.
 
 ## How do I edit a card?
 
-Via the admin dashboard — log in, find the card, click Edit.
+There are two ways:
+
+1. **Edit your own card** — if you made a card from the create page, the banner at the top offers an "Edit my card" button. That pre-fills the form and saves back to the same card. This works even on a day when you've already hit the one-per-day create limit.
+2. **Via the admin dashboard** — log in, find the card, click Edit.
+
+The create page allows **one new card per day** per browser. Editing an existing card of yours is always allowed; admins can create unlimited cards.
 
 Or via API (you need a valid admin session + CSRF token):
 
@@ -133,7 +138,7 @@ Just cards. Each card is stored as `cardy:card:<id>` in Redis. The admin passwor
 
 ## How do I add a new social platform?
 
-1. Add the icon to `public/` (e.g. `spotify.png`)
+1. Add the icon to `public/` (e.g. `youtube.png`)
 2. Add the platform name to `KNOWN_PLATFORMS` in `server.js`
 3. Add it to `PLATFORMS` in `public/index.html`, `views/admin.html`
 4. Add the icon HTML to `SOCIAL_ICONS` and `SOCIAL_NAMES` in `public/render-card.js`
@@ -144,7 +149,7 @@ Just cards. Each card is stored as `cardy:card:<id>` in Redis. The admin passwor
 
 ## Tests are failing. What do I do?
 
-Run `npm test` and read the output. The test suite runs close to two hundred checks covering:
+Run `npm test` and read the output. The test suite runs 245 checks covering:
 - Card creation and validation
 - Social platform filtering
 - Backward compatibility (old field names)
@@ -192,7 +197,7 @@ cardy/
 ├── server.js              # Express app (all routes, auth, Redis)
 ├── api/index.js           # Vercel serverless entry
 ├── vercel.json            # Rewrites everything to /api/index
-├── test.js                # ~183-check suite
+├── test.js                # 245-check suite
 ├── .env.example           # Template for .env
 ├── .gitignore
 ├── FAQ.md                 # ← you are here
@@ -201,6 +206,7 @@ cardy/
 │   ├── card.html          # Shared card page
 │   ├── style.css          # Theme CSS
 │   ├── render-card.js     # Shared card renderer
+│   ├── photo.js           # Shared photo read/resize (real ratio)
 │   ├── admin.css          # Admin styles
 │   ├── cardy.png          # App icon
 │   ├── job.png            # Role icon (work)

@@ -99,7 +99,9 @@ const footer =
 // Full card with a circular photo on the left and the details to its right.
 function photoLayout(card) {
   const isOwner = !!(card && card.owner);
-  const name = truncate(card.name, 16);
+  // Names are capped short enough that the owner badge still fits on the card:
+  // each char is ~27px at font 44 bold, and the badge is 86px wide.
+  const name = truncate(card.name, 12);
   const roleIcon = ROLE_ICON[card.role] || 'job';
   const roleLine = truncate(
     card.roleLabel || (card.role === 'student' ? 'Student' : 'your tiny digital card'),
