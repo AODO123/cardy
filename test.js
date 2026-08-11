@@ -154,7 +154,7 @@ async function main() {
   // Boot the servers. server2 has no PUBLIC_BASE_URL so the Host-header
   // rejection path and the OG rate limiter can be exercised against it.
   const server = await bootServer(PORT);
-  const server2 = await bootServer(PORT2, { PUBLIC_BASE_URL: '' });
+  const server2 = await bootServer(PORT2, { PUBLIC_BASE_URL: '', OG_LIMIT: '3' });
   console.log('Servers up. Running tests…\n');
 
   // ---- POST /api/cards ----
@@ -281,6 +281,7 @@ async function main() {
   check('home: more-about-you tiles', r.text.includes('More about you') && (r.text.match(/class="tile">/g) || []).length === 4);
   check('home: all 4 social placeholders are "username"', (r.text.match(/placeholder="username"/g) || []).length === 4);
   check('home: photo dropzone present', r.text.includes('id="photo-drop"') && r.text.includes('id="photo-input"'));
+  check('home: shared photo.js loaded', r.text.includes('src="/photo.js"'));
   check('home: daily-limit banner present', r.text.includes('id="limit-banner"'));
   check('home: no bitly anywhere', !r.text.toLowerCase().includes('bitly'));
   check('home: photo field is after name', r.text.indexOf('photo-drop') > r.text.indexOf('name="name"'));
@@ -289,7 +290,7 @@ async function main() {
   check('card page serves (even unknown id) → 200', r.status === 200);
   check('card page: has "Create your own card" → /', r.text.includes('Create your own card') && r.text.includes('href="/"'));
 
-  for (const asset of ['style.css', 'render-card.js', 'cardy.png', 'discord.png', 'x.png',
+  for (const asset of ['style.css', 'render-card.js', 'photo.js', 'cardy.png', 'discord.png', 'x.png',
     'instagram.png', 'tiktok.png']) {
     r = await get('/' + asset);
     check(`asset ${asset} → 200`, r.status === 200, `got ${r.status}`);
@@ -377,6 +378,35 @@ async function main() {
 
   r = await post('/api/cards', { name: 'photo5', age: 20, photo: 'data:image/jpeg;base64,' + Buffer.from('fakejpegbytes').toString('base64') });
   check('photo: jpeg accepted', r.status === 201 && /^data:image\/jpeg;base64,/.test(r.json.photo));
+
+  // Sanitizer edge cases: only jpeg/png/webp data URIs survive, everything
+  // else (including script-capable svg) is dropped silently.
+  r = await post('/api/cards', { name: 'photo svg', age: 20, photo: 'data:image/svg+xml;base64,' + Buffer.from('<svg onload=alert(1)>').toString('base64') });
+  check('photo: svg dropped (no script smuggling)', r.status === 201 && !r.json.photo, JSON.stringify(r.json && r.json.photo));
+
+  r = await post('/api/cards', { name: 'photo gif', age: 20, photo: 'data:image/gif;base64,R0lGODlh' });
+  check('photo: gif dropped (not in allowlist)', r.status === 201 && !r.json.photo);
+
+  r = await post('/api/cards', { name: 'photo upper', age: 20, photo: 'data:IMAGE/JPEG;base64,' + Buffer.from('fake').toString('base64') });
+  check('photo: uppercase mime normalized to lowercase', r.status === 201 && /^data:image\/jpeg;base64,/.test(r.json.photo), JSON.stringify(r.json && r.json.photo));
+
+  r = await post('/api/cards', { name: 'photo ws', age: 20, photo: '  \n ' + TINY_PNG + '  ' });
+  check('photo: surrounding whitespace trimmed', r.status === 201 && r.json.photo === TINY_PNG);
+
+  r = await post('/api/cards', { name: 'photo nl', age: 20, photo: TINY_PNG.replace('CAQAAAC1H', 'CAQAA\nAC1H') });
+  check('photo: newline inside base64 re-encoded clean', r.status === 201 && r.json.photo === TINY_PNG, JSON.stringify(r.json && r.json.photo));
+
+  r = await post('/api/cards', { name: 'photo empty', age: 20, photo: '' });
+  check('photo: empty string dropped', r.status === 201 && !r.json.photo);
+
+  r = await post('/api/cards', { name: 'photo null', age: 20, photo: null });
+  check('photo: null dropped', r.status === 201 && !r.json.photo);
+
+  // A large-but-valid photo (well under the 1MB body limit, over half the
+  // photo cap) is stored in full and round-trips byte-for-byte.
+  const bigPng = 'data:image/png;base64,' + Buffer.alloc(400000, 7).toString('base64');
+  r = await post('/api/cards', { name: 'photo big', age: 20, photo: bigPng });
+  check('photo: ~400KB photo accepted byte-for-byte', r.status === 201 && r.json.photo === bigPng, `got ${r.status}`);
 
   // A photo card must still produce a valid OG image (the photo layout).
   r = await post('/api/cards', { name: 'photo OG', age: 22, photo: TINY_PNG });
@@ -502,6 +532,110 @@ async function main() {
   html = render({ name: 'plain' });
   check('renderer: no photo → no card-photo img', !html.includes('card-photo'));
 
+  // ---- public/photo.js: ratio-preserving resize + file reading ----
+  console.log('── photo.js resize');
+  const photoCode = fs.readFileSync(path.join(__dirname, 'public', 'photo.js'), 'utf8');
+
+  // A fresh fake DOM for photo.js. document.createElement('canvas') returns a
+  // canvas that records its size and serialises it into a fake JPEG data URI,
+  // so we can assert exactly what dimensions the resize chose.
+  function photoSandbox() {
+    let canvas = null;
+    const sandbox = {
+      document: {
+        createElement: (tag) => {
+          if (tag !== 'canvas') return {};
+          canvas = {
+            width: 0,
+            height: 0,
+            getContext: () => ({ drawImage: () => {} }),
+            toDataURL: (type) => 'data:' + type + ';base64,' + canvas.width + 'x' + canvas.height,
+          };
+          return canvas;
+        },
+      },
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(photoCode, sandbox);
+    return { sandbox, canvas: () => canvas };
+  }
+
+  function resizeDims(w, h) {
+    const env = photoSandbox();
+    env.sandbox.resizeToDataUri({ width: w, height: h }, 400);
+    return env.canvas();
+  }
+
+  let dims = resizeDims(1200, 600);
+  check('photo resize: landscape 1200×600 → 400×200', dims.width === 400 && dims.height === 200, JSON.stringify(dims));
+  dims = resizeDims(600, 1200);
+  check('photo resize: portrait 600×1200 → 200×400', dims.width === 200 && dims.height === 400, JSON.stringify(dims));
+  dims = resizeDims(800, 800);
+  check('photo resize: square 800×800 → 400×400', dims.width === 400 && dims.height === 400, JSON.stringify(dims));
+  dims = resizeDims(200, 100);
+  check('photo resize: small image never upscaled (200×100)', dims.width === 200 && dims.height === 100, JSON.stringify(dims));
+  dims = resizeDims(3, 4);
+  check('photo resize: tiny image kept (3×4)', dims.width === 3 && dims.height === 4, JSON.stringify(dims));
+  dims = resizeDims(400, 300);
+  check('photo resize: exactly at cap unchanged (400×300)', dims.width === 400 && dims.height === 300, JSON.stringify(dims));
+  dims = resizeDims(4000, 200);
+  check('photo resize: very wide 4000×200 → 400×20', dims.width === 400 && dims.height === 20, JSON.stringify(dims));
+  dims = resizeDims(200, 4000);
+  check('photo resize: very tall 200×4000 → 20×400', dims.width === 20 && dims.height === 400, JSON.stringify(dims));
+  dims = resizeDims(1000, 999);
+  check('photo resize: ratio kept through rounding (1000×999 → 400×400)', dims.width === 400 && dims.height === 400, JSON.stringify(dims));
+  dims = resizeDims(0, 0);
+  check('photo resize: degenerate 0×0 doesn’t crash → 1×1', dims.width === 1 && dims.height === 1, JSON.stringify(dims));
+  {
+    const env = photoSandbox();
+    const uri = env.sandbox.resizeToDataUri({ width: 100, height: 50 }, 400);
+    check('photo resize: output is a jpeg data uri', /^data:image\/jpeg;base64,/.test(uri), uri);
+  }
+
+  // readPhotoFile end-to-end with a fake Image (src assignment fires onload)
+  // and a fake FileReader.
+  function photoIoSandbox(imgW, imgH) {
+    const env = photoSandbox();
+    function FakeImage() { this.width = imgW; this.height = imgH; this.onload = null; }
+    Object.defineProperty(FakeImage.prototype, 'src', {
+      get: function () { return this._src; },
+      set: function (v) { this._src = v; if (this.onload) this.onload(); },
+    });
+    function FakeReader() {}
+    FakeReader.prototype.readAsDataURL = function () {
+      this.result = 'data:image/png;base64,zzz';
+      this.onload();
+    };
+    env.sandbox.Image = FakeImage;
+    env.sandbox.FileReader = FakeReader;
+    return env;
+  }
+
+  {
+    const env = photoIoSandbox(1600, 800);
+    let got = 'NOT CALLED';
+    env.sandbox.readPhotoFile({ type: 'image/jpeg' }, (uri) => { got = uri; });
+    check('photo read: image file resized through callback', got === 'data:image/jpeg;base64,400x200', got);
+  }
+  {
+    const env = photoIoSandbox(100, 50);
+    let got = 'NOT CALLED';
+    env.sandbox.readPhotoFile({ type: 'text/plain' }, (uri) => { got = uri; });
+    check('photo read: non-image file type ignored', got === 'NOT CALLED', got);
+  }
+  {
+    const env = photoIoSandbox(100, 50);
+    let got = 'NOT CALLED';
+    env.sandbox.readPhotoFile(null, (uri) => { got = uri; });
+    check('photo read: null file ignored', got === 'NOT CALLED', got);
+  }
+  {
+    const env = photoIoSandbox(100, 50);
+    let got = 'NOT CALLED';
+    env.sandbox.readPhotoFile({ type: 'image/png' }, (uri) => { got = uri; });
+    check('photo read: small image passed through uncropped', got === 'data:image/jpeg;base64,100x50', got);
+  }
+
   // ---- admin dashboard ----
   console.log('── Admin dashboard');
 
@@ -567,6 +701,8 @@ async function main() {
 
     r = await adminReq(login.token, 'GET', '/admin');
     check('admin: /admin serves the dashboard when logged in', r.status === 200 && r.text.includes('cards-list'));
+    check('admin: edit modal has photo dropzone + shared photo.js',
+      r.text.includes('admin-photo-drop') && r.text.includes('src="/photo.js"'), 'photo markup missing');
 
     r = await adminReq(null, 'GET', '/admin/api/cards');
     check('admin: unauthenticated list → 401', r.status === 401);
@@ -735,6 +871,53 @@ async function main() {
     check('admin bypass: daily-limit reports limited:false', dlAdmin.limited === false, JSON.stringify(dlAdmin));
     await adminRedis.del('cardy:fp:' + adminFp);
 
+    // Admin photo editing: create with a photo, replace it, remove it, and
+    // confirm an absent/blank photo field behaves the right way.
+    const PHOTO_A = 'data:image/jpeg;base64,' + Buffer.from('photo-a-bytes').toString('base64');
+    const PHOTO_B = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    let photoCardId = null;
+    r = await adminReq(login.token, 'POST', '/admin/api/cards', { name: 'photo admin', age: 25, photo: PHOTO_A }, csrf);
+    check('admin photo: create with photo → 201 + stored', r.status === 201 && r.json.photo === PHOTO_A, JSON.stringify(r.json));
+    photoCardId = r.json && r.json.id;
+    check('admin photo: create response strips fingerprint', photoCardId && !r.text.includes('fingerprint'));
+
+    // PATCH bodies carry the whole card (the dashboard always sends every
+    // field), so each test body starts from the full card and overrides it.
+    const fullPatch = (over) => ({ name: 'photo admin', age: 25, ...(over || {}) });
+
+    r = await adminReq(login.token, 'PATCH', '/admin/api/cards/' + photoCardId, fullPatch({ photo: PHOTO_B }), csrf);
+    check('admin photo: PATCH replaces photo', r.status === 200 && r.json.photo === PHOTO_B, JSON.stringify(r.json));
+
+    r = await adminReq(login.token, 'PATCH', '/admin/api/cards/' + photoCardId, fullPatch(), csrf);
+    check('admin photo: PATCH without photo keeps it', r.status === 200 && r.json.photo === PHOTO_B, JSON.stringify(r.json));
+
+    r = await adminReq(login.token, 'PATCH', '/admin/api/cards/' + photoCardId, fullPatch({ photo: null }), csrf);
+    check('admin photo: PATCH photo:null removes it', r.status === 200 && !r.json.photo, JSON.stringify(r.json));
+
+    r = await adminReq(login.token, 'PATCH', '/admin/api/cards/' + photoCardId, fullPatch({ photo: PHOTO_B }), csrf);
+    check('admin photo: photo re-added', r.status === 200 && r.json.photo === PHOTO_B, JSON.stringify(r.json));
+    r = await adminReq(login.token, 'PATCH', '/admin/api/cards/' + photoCardId, fullPatch({ photo: '' }), csrf);
+    check('admin photo: PATCH photo:"" removes it', r.status === 200 && !r.json.photo, JSON.stringify(r.json));
+
+    // A malformed photo is ignored — the existing photo survives untouched.
+    r = await adminReq(login.token, 'PATCH', '/admin/api/cards/' + photoCardId, fullPatch({ photo: PHOTO_B }), csrf);
+    r = await adminReq(login.token, 'PATCH', '/admin/api/cards/' + photoCardId, fullPatch({ photo: 'garbage not a data uri' }), csrf);
+    check('admin photo: invalid photo keeps existing', r.status === 200 && r.json.photo === PHOTO_B, JSON.stringify(r.json));
+
+    // Removal is visible on the public API, and the OG renderer falls back.
+    r = await adminReq(login.token, 'PATCH', '/admin/api/cards/' + photoCardId, fullPatch({ photo: null }), csrf);
+    check('admin photo: final remove before public checks', r.status === 200 && !r.json.photo, JSON.stringify(r.json));
+    r = await get('/api/cards/' + photoCardId);
+    check('admin photo: public GET reflects removed photo', r.status === 200 && !r.text.includes('data:image/'), `got ${r.status}`);
+    r = await get('/og/' + photoCardId + '.png');
+    check('admin photo: OG renders after photo removed', r.status === 200 && r.headers.get('content-type') === 'image/png', `got ${r.status}`);
+
+    // PATCHing a card that doesn't exist still 404s.
+    r = await adminReq(login.token, 'PATCH', '/admin/api/cards/000000', fullPatch({ photo: PHOTO_A }), csrf);
+    check('admin photo: PATCH missing card → 404', r.status === 404, `got ${r.status}`);
+
+    if (photoCardId) await adminReq(login.token, 'DELETE', '/admin/api/cards/' + photoCardId, undefined, csrf);
+
     // A legacy sha-256 hash still verifies, and upgrades to scrypt in place.
     await adminRedis.set('cardy:admin:passhash', sha256('migrate-pass'));
     let mlogin = await adminLogin('migrate-pass');
@@ -774,13 +957,15 @@ async function main() {
     await adminRedis.del('cardy:daily:' + r2.fp + ':' + new Date().toISOString().slice(0, 10));
   }
 
-  // The OG renderer is capped per IP; the 31st request in a minute is refused.
-  for (let i = 0; i < 30; i++) {
+  // The OG renderer is capped per IP. server2 runs with OG_LIMIT=3 so a burst
+  // of a few renders finishes well inside the window no matter how slow the
+  // machine is; the limit logic being exercised is identical to production's.
+  for (let i = 0; i < 3; i++) {
     const og = await getOn(BASE2, '/og/000000.png');
-    if (i === 29) check('og: 30th request within a minute → 200 PNG', og.status === 200, `got ${og.status}`);
+    if (i === 2) check('og: 3rd request within a minute → 200 PNG', og.status === 200, `got ${og.status}`);
   }
-  const og31 = await getOn(BASE2, '/og/000000.png');
-  check('og: 31st request within a minute → 429', og31.status === 429, `got ${og31.status}`);
+  const og4 = await getOn(BASE2, '/og/000000.png');
+  check('og: 4th request within a minute → 429', og4.status === 429, `got ${og4.status}`);
 
   // Cleanup: delete every card this run created (never touch the owner).
   const ids = [...createdCardIds];

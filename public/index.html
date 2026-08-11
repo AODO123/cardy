@@ -166,6 +166,7 @@
   </footer>
 
   <script src="/render-card.js"></script>
+  <script src="/photo.js"></script>
   <script>
     const form = document.getElementById('card-form');
     const preview = document.getElementById('preview');
@@ -255,31 +256,9 @@
       renderCardData(currentData(), preview);
     }
 
-    // Resize the picked image to a 400×400 JPEG on a canvas, so the stored
-    // card stays small and the photo is always square regardless of input.
-    function readPhotoFile(file) {
-      if (!file || !file.type || !file.type.startsWith('image/')) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const img = new Image();
-        img.onload = () => {
-          const size = 400;
-          const canvas = document.createElement('canvas');
-          canvas.width = size;
-          canvas.height = size;
-          const ctx = canvas.getContext('2d');
-          const side = Math.min(img.width, img.height);
-          ctx.drawImage(
-            img,
-            (img.width - side) / 2, (img.height - side) / 2, side, side,
-            0, 0, size, size
-          );
-          setPhoto(canvas.toDataURL('image/jpeg', 0.85));
-        };
-        img.src = reader.result;
-      };
-      reader.readAsDataURL(file);
-    }
+    // readPhotoFile comes from /photo.js — it shrinks the image to a small
+    // JPEG, keeps its real aspect ratio (no square crop), and hands the data
+    // URI to the callback.
 
     photoDrop.addEventListener('click', () => photoInput.click());
     photoDrop.addEventListener('keydown', (e) => {
@@ -296,10 +275,10 @@
     photoDrop.addEventListener('drop', (e) => {
       e.preventDefault();
       photoDrop.classList.remove('dragging');
-      readPhotoFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+      readPhotoFile(e.dataTransfer.files && e.dataTransfer.files[0], setPhoto);
     });
     photoInput.addEventListener('change', () => {
-      readPhotoFile(photoInput.files[0]);
+      readPhotoFile(photoInput.files[0], setPhoto);
       photoInput.value = '';
     });
     photoRemove.addEventListener('click', (e) => {

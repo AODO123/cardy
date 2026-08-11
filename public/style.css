@@ -276,14 +276,17 @@ input:focus, textarea:focus, select:focus {
   color: var(--accent-soft);
 }
 
+/* A picked photo keeps its real aspect ratio — no zoom-to-fill crop. The box
+   grows to fit it (capped at 300px tall) so the whole image is visible. */
 .photo-preview {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
   display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 300px;
 }
 
-.photo-drop.has-photo { border-style: solid; }
+.photo-drop.has-photo { border-style: solid; height: auto; }
 
 .photo-remove {
   position: absolute;

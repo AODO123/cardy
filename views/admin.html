@@ -50,6 +50,18 @@
           <label>Name <em>*</em><input name="name" required placeholder="john doe"></label>
           <label>Age <em>*</em><input name="age" type="number" min="1" max="130" required placeholder="20"></label>
         </div>
+        <div class="field-group photo-field">
+          <label class="group-label">Image <span class="optional">optional</span></label>
+          <div id="admin-photo-drop" class="photo-drop" role="button" tabindex="0" aria-label="Upload an image">
+            <input id="admin-photo-input" type="file" accept="image/*" hidden>
+            <img id="admin-photo-preview" class="photo-preview" alt="" hidden>
+            <div id="admin-photo-placeholder" class="photo-placeholder">
+              <span class="photo-plus">+</span>
+              <span>Upload your image</span>
+            </div>
+            <button type="button" id="admin-photo-remove" class="photo-remove" aria-label="Remove image" title="Remove image" hidden>&times;</button>
+          </div>
+        </div>
         <div class="row">
           <label>Country <span class="optional">optional</span><input name="country" placeholder="Canada"></label>
           <label>Title or focus <span class="optional">optional</span><input name="roleLabel" placeholder="e.g. Software Engineer, barista, Computer Science"></label>
@@ -108,6 +120,7 @@
 
   <div id="toast" class="toast" hidden></div>
 
+  <script src="/photo.js"></script>
   <script>
     const PLATFORMS = ['discord', 'x', 'instagram', 'tiktok'];
 
@@ -302,6 +315,7 @@
       f.favoriteSong.value = (card && card.favoriteSong) || '';
       f.favoriteMovie.value = (card && card.favoriteMovie) || '';
       f.owner.checked = !!(card && card.owner);
+      setPhoto((card && card.photo) || '');
 
       const rows = $('#social-rows');
       rows.innerHTML = '';
@@ -334,12 +348,64 @@
         favoriteSong: f.favoriteSong.value,
         favoriteMovie: f.favoriteMovie.value,
         owner: f.owner.checked,
+        photo: photoData || null,
       };
       await saveCard(payload, editingId);
       $('#card-modal').close();
     });
 
     let editingId = null;
+
+    // --- photo upload (resize logic lives in /photo.js) ---
+    const photoDrop = $('#admin-photo-drop');
+    const photoInput = $('#admin-photo-input');
+    const photoPreview = $('#admin-photo-preview');
+    const photoPlaceholder = $('#admin-photo-placeholder');
+    const photoRemove = $('#admin-photo-remove');
+    let photoData = ''; // base64 data URI; '' means no image
+
+    function setPhoto(dataUri) {
+      photoData = dataUri || '';
+      if (photoData) {
+        photoPreview.src = photoData;
+        photoPreview.hidden = false;
+        photoPlaceholder.hidden = true;
+        photoRemove.hidden = false;
+        photoDrop.classList.add('has-photo');
+      } else {
+        photoPreview.removeAttribute('src');
+        photoPreview.hidden = true;
+        photoPlaceholder.hidden = false;
+        photoRemove.hidden = true;
+        photoDrop.classList.remove('has-photo');
+      }
+    }
+
+    photoDrop.addEventListener('click', () => photoInput.click());
+    photoDrop.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        photoInput.click();
+      }
+    });
+    photoDrop.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      photoDrop.classList.add('dragging');
+    });
+    photoDrop.addEventListener('dragleave', () => photoDrop.classList.remove('dragging'));
+    photoDrop.addEventListener('drop', (e) => {
+      e.preventDefault();
+      photoDrop.classList.remove('dragging');
+      readPhotoFile(e.dataTransfer.files && e.dataTransfer.files[0], setPhoto);
+    });
+    photoInput.addEventListener('change', () => {
+      readPhotoFile(photoInput.files[0], setPhoto);
+      photoInput.value = '';
+    });
+    photoRemove.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setPhoto('');
+    });
 
     async function saveCard(payload, id) {
       const { status, data } = await api(id ? '/admin/api/cards/' + id : '/admin/api/cards', {

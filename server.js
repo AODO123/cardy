@@ -588,6 +588,8 @@ app.patch('/admin/api/cards/:id', requireAuth(), requireCsrf, asyncHandler(async
     return res.status(400).json({ error: result.error });
   }
   const card = { ...existing, ...result.value };
+  // An explicit empty photo means "remove it"; a missing one leaves it alone.
+  if (req.body && (req.body.photo === null || req.body.photo === '')) delete card.photo;
   await saveCard(card);
   res.json(toPublicCard(card));
 }));
@@ -698,7 +700,9 @@ app.get('/card/:id', asyncHandler(async (req, res) => {
 // Rendering is CPU-heavy, so cap it per IP. The limiter lives in memory —
 // per serverless instance — which raises the cost of hammering it without
 // being a hard global cap (fine for this threat model).
-const OG_LIMIT = 30; // requests per IP per minute
+// Requests per IP per minute. Env-overridable so the test suite can burst a
+// handful of renders quickly; production keeps the default.
+const OG_LIMIT = Number(process.env.OG_LIMIT) || 30;
 const OG_WINDOW_MS = 60 * 1000;
 const ogHits = new Map(); // ip → { count, resetAt }
 
